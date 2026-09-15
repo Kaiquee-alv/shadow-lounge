@@ -9,7 +9,7 @@ import { registerStorageProxy } from "./_core/storageProxy.js";
 export function createApp() {
   const app = express();
   app.use(cookieParser());
-  app.use("/api", (_req, res, next) => {
+  app.use("/api", (_req: any, res: any, next: any) => {
     res.setHeader("Cache-Control", "no-store");
     next();
   });
