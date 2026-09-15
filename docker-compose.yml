@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: shadow-lounge-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-shadow_lounge}
+      POSTGRES_USER: ${POSTGRES_USER:-shadow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shadow_local_password}
+    volumes:
+      - shadow_lounge_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - shadow-lounge-net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shadow-lounge-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-shadow}:${POSTGRES_PASSWORD:-shadow_local_password}@db:5432/${POSTGRES_DB:-shadow_lounge}
+      JWT_SECRET: ${JWT_SECRET:-change_this_local_session_secret}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    networks:
+      - shadow-lounge-net
+
+volumes:
+  shadow_lounge_postgres:
+    name: shadow-lounge-postgres-data
+
+networks:
+  shadow-lounge-net:
+    name: shadow-lounge-network
