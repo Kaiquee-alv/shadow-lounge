@@ -56,8 +56,8 @@ export const appRouter = router({
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      const cookieOptions = getSessionCookieOptions(ctx.req as never);
+      (ctx.res as any).clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return { success: true } as const;
     }),
   }),
@@ -69,7 +69,7 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       const session = await registerLocally(input);
       if (!session) throw new TRPCError({ code: "CONFLICT", message: "Este usuário já está cadastrado" });
-      ctx.res.cookie("shadow_session", session.token, {
+      (ctx.res as any).cookie("shadow_session", session.token, {
         httpOnly: true,
         sameSite: "lax",
         secure: process.env.NODE_ENV === "production",
@@ -81,7 +81,7 @@ export const appRouter = router({
     login: publicProcedure.input(z.object({ username: z.string().trim().toLowerCase().min(3).max(64), password: z.string().min(1).max(128) })).mutation(async ({ ctx, input }) => {
       const session = await loginLocally(input.username, input.password);
       if (!session) throw new TRPCError({ code: "UNAUTHORIZED", message: "Usuário ou senha inválidos" });
-      ctx.res.cookie("shadow_session", session.token, {
+      (ctx.res as any).cookie("shadow_session", session.token, {
         httpOnly: true,
         sameSite: "lax",
         secure: process.env.NODE_ENV === "production",
@@ -91,7 +91,7 @@ export const appRouter = router({
       return { success: true, expiresAt: session.expiresAt };
     }),
     logout: publicProcedure.mutation(({ ctx }) => {
-      ctx.res.clearCookie("shadow_session", { path: "/" });
+      (ctx.res as any).clearCookie("shadow_session", { path: "/" });
       return { success: true } as const;
     }),
   }),

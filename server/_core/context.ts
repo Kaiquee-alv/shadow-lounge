@@ -17,13 +17,13 @@ function sessionToken(cookieHeader?: string) {
 export async function createContext(opts: CreateExpressContextOptions): Promise<TrpcContext> {
   let user: User | null = null;
   try {
-    user = await sdk.authenticateRequest(opts.req);
+    user = await sdk.authenticateRequest(opts.req as any);
   } catch {
     user = null;
   }
 
   if (!user) {
-    const token = sessionToken(opts.req.headers.cookie);
+    const token = sessionToken((opts.req as any).headers?.cookie);
     if (token) user = await getLocalUserFromSession(token);
   }
 
