@@ -1,17 +1,33 @@
 import { COOKIE_NAME, ONE_YEAR_MS, OAUTH_STATE_COOKIE, decodeOAuthState } from "@shared/const";
 import { parse as parseCookieHeader } from "cookie";
-import type { Express, Request, Response } from "express";
 import * as db from "../db.js";
 import { getSessionCookieOptions } from "./cookies.js";
 import { sdk } from "./sdk.js";
 
-function getQueryParam(req: Request, key: string): string | undefined {
+type OAuthRequest = {
+  query: Record<string, unknown>;
+  headers: { cookie?: string };
+};
+
+type OAuthResponse = {
+  status: (code: number) => OAuthResponse;
+  json: (body: unknown) => OAuthResponse;
+  clearCookie: (name: string, options: Record<string, unknown>) => OAuthResponse;
+  cookie: (name: string, value: string, options: Record<string, unknown>) => OAuthResponse;
+  redirect: (code: number, url: string) => OAuthResponse;
+};
+
+type OAuthApp = {
+  get: (path: string, handler: (req: OAuthRequest, res: OAuthResponse) => Promise<void>) => void;
+};
+
+function getQueryParam(req: OAuthRequest, key: string): string | undefined {
   const value = req.query[key];
   return typeof value === "string" ? value : undefined;
 }
 
-export function registerOAuthRoutes(app: Express) {
-  app.get("/api/oauth/callback", async (req: Request, res: Response) => {
+export function registerOAuthRoutes(app: OAuthApp) {
+  app.get("/api/oauth/callback", async (req: OAuthRequest, res: OAuthResponse) => {
     const code = getQueryParam(req, "code");
     const state = getQueryParam(req, "state");
 
