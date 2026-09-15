@@ -71,7 +71,6 @@ export default function Home() {
   const { user, loading, isAuthenticated, logout } = useAuth();
   const [page, setPage] = useState<Page>("tables");
   const [loginOpen, setLoginOpen] = useState(false);
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [credentials, setCredentials] = useState({ name: "", username: "", password: "" });
   const [mobileNav, setMobileNav] = useState(false);
   const [selectedTabId, setSelectedTabId] = useState<number | null>(null);
@@ -128,7 +127,6 @@ export default function Home() {
   const expenseMutation = trpc.finance.createExpense.useMutation({ onSuccess: () => { void utils.finance.expenses.invalidate(); void utils.lounge.dashboard.invalidate(); setExpenseOpen(false); setExpense({ description: "", category: "Fornecedores", amount: "", method: "pix", notes: "" }); toast.success("Despesa registrada no financeiro"); }, onError: (error) => toast.error(error.message) });
   const finishAuth = (message: string) => { setLoginOpen(false); setCredentials({ name: "", username: "", password: "" }); void utils.auth.me.invalidate(); toast.success(message); };
   const localLoginMutation = trpc.localAuth.login.useMutation({ onSuccess: () => finishAuth("Acesso liberado"), onError: (error) => toast.error(error.message) });
-  const localRegisterMutation = trpc.localAuth.register.useMutation({ onSuccess: () => finishAuth("Conta criada com sucesso"), onError: (error) => toast.error(error.message) });
   const localLogoutMutation = trpc.localAuth.logout.useMutation({ onSuccess: () => { void utils.auth.me.invalidate(); toast.success("Sessão local encerrada"); } });
 
   const tables = tablesQuery.data ?? demoTables;
@@ -232,15 +230,13 @@ export default function Home() {
 
       <Dialog open={loginOpen} onOpenChange={setLoginOpen}>
         <DialogContent className="payment-dialog login-dialog">
-          <DialogHeader><div className="dialog-icon"><Flame size={20} /></div><DialogTitle>{authMode === "login" ? "Entrar no sistema" : "Criar sua conta"}</DialogTitle><DialogDescription>{authMode === "login" ? "Use seu usuário e senha para acessar a operação." : "Cadastre-se para começar a operar no Shadow Lounge."}</DialogDescription></DialogHeader>
+          <DialogHeader><div className="dialog-icon"><Flame size={20} /></div><DialogTitle>Entrar no sistema</DialogTitle><DialogDescription>Use uma das credenciais fixas da operação.</DialogDescription></DialogHeader>
           <div className="expense-form">
-            {authMode === "register" && <label className="field-label">Nome<Input autoComplete="name" value={credentials.name} onChange={(event) => setCredentials({ ...credentials, name: event.target.value })} placeholder="Seu nome" /></label>}
             <label className="field-label">Usuário<Input autoComplete="username" value={credentials.username} onChange={(event) => setCredentials({ ...credentials, username: event.target.value.toLowerCase() })} placeholder="ex.: joao.silva" /></label>
-            <label className="field-label">Senha<Input autoComplete={authMode === "login" ? "current-password" : "new-password"} type="password" value={credentials.password} placeholder={authMode === "login" ? "Digite sua senha" : "Mínimo de 12 caracteres"} onChange={(event) => setCredentials({ ...credentials, password: event.target.value })} /></label>
-            <Button className="primary-wide" onClick={() => authMode === "login" ? localLoginMutation.mutate({ username: credentials.username, password: credentials.password }) : localRegisterMutation.mutate(credentials)} disabled={localLoginMutation.isPending || localRegisterMutation.isPending}>{localLoginMutation.isPending || localRegisterMutation.isPending ? "Aguarde..." : authMode === "login" ? "Entrar" : "Criar conta"}</Button>
-            <Button variant="outline" onClick={() => setAuthMode(authMode === "login" ? "register" : "login")}>{authMode === "login" ? "Ainda não tenho conta" : "Já tenho uma conta"}</Button>
+            <label className="field-label">Senha<Input autoComplete="current-password" type="password" value={credentials.password} placeholder="Digite sua senha" onChange={(event) => setCredentials({ ...credentials, password: event.target.value })} /></label>
+            <Button className="primary-wide" onClick={() => localLoginMutation.mutate({ username: credentials.username, password: credentials.password })} disabled={localLoginMutation.isPending}>{localLoginMutation.isPending ? "Aguarde..." : "Entrar"}</Button>
           </div>
-          <p className="local-access-note">A senha é transmitida somente por HTTPS e armazenada no servidor como hash.</p>
+          <p className="local-access-note">Acesso local temporário. Use o usuário <b>atendente</b> ou <b>gerente</b>.</p>
         </DialogContent>
       </Dialog>
 

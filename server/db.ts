@@ -177,6 +177,60 @@ function normalizeUsername(username: string) {
   return username.trim().toLowerCase();
 }
 
+const FIXED_USERS = [
+  {
+    username: "atendente",
+    name: "Atendente",
+    password: process.env.FIXED_ATTENDANT_PASSWORD ?? "v7Xc6Rbc64dVgmZtPhR7NCt_",
+    localRole: "attendant" as const,
+  },
+  {
+    username: "gerente",
+    name: "Gerente",
+    password: process.env.FIXED_MANAGER_PASSWORD ?? "UZlNDUD8YPkacwEvCB2eQnpZ",
+    localRole: "manager" as const,
+  },
+];
+
+async function ensureFixedUsers() {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+
+  for (const fixedUser of FIXED_USERS) {
+    const openId = `fixed-${fixedUser.username}`;
+    const passwordHash = hashPassword(fixedUser.password);
+
+    await db.insert(users).values({
+      openId,
+      name: fixedUser.name,
+      loginMethod: "local-fixed",
+      role: "user",
+    }).onConflictDoUpdate({
+      target: users.openId,
+      set: { name: fixedUser.name, loginMethod: "local-fixed", updatedAt: new Date() },
+    });
+
+    const user = await db.select({ id: users.id }).from(users).where(eq(users.openId, openId)).limit(1);
+    const userId = user[0]?.id;
+    if (!userId) throw new Error(`Não foi possível criar o usuário fixo ${fixedUser.username}`);
+
+    await db.insert(userProfiles).values({ userId, localRole: fixedUser.localRole, active: true })
+      .onConflictDoUpdate({
+        target: userProfiles.userId,
+        set: { localRole: fixedUser.localRole, active: true, updatedAt: new Date() },
+      });
+
+    await db.insert(localCredentials).values({
+      userId,
+      username: fixedUser.username,
+      passwordHash,
+    }).onConflictDoUpdate({
+      target: localCredentials.username,
+      set: { userId, passwordHash, updatedAt: new Date() },
+    });
+  }
+}
+
 async function createLocalSession(userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
@@ -218,6 +272,7 @@ export async function registerLocally(input: { name: string; username: string; p
 
 export async function loginLocally(username: string, password: string) {
   await ensureInitialData();
+  await ensureFixedUsers();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   const credential = await db.select({
