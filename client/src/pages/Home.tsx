@@ -153,7 +153,7 @@ export default function Home() {
     action();
   };
 
-  const endSession = () => user?.loginMethod === "local" ? localLogoutMutation.mutate() : logout();
+  const endSession = () => user?.loginMethod?.startsWith("local") ? localLogoutMutation.mutate() : logout();
 
   const selectTable = (table: any) => {
     if (table.status === "free") {

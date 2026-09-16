@@ -162,3 +162,58 @@ h3 { margin: 4px 0 0; color: #f3eee6; font-family: "Outfit", sans-serif; font-si
 .price-rule-actions { margin-left: auto; display: flex; gap: 6px; }
 .price-rule-actions button { font-size: 10px; padding: 5px 8px; }
 .tip-settings-panel { margin-top: 16px; }
+
+
+/* Tema claro solicitado: mantém o dourado da marca com superfícies brancas. */
+:root {
+  --background: 0 0% 98%;
+  --foreground: 222 22% 16%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 22% 16%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 22% 16%;
+  --secondary: 210 20% 96%;
+  --secondary-foreground: 222 22% 20%;
+  --muted: 210 20% 95%;
+  --muted-foreground: 215 12% 42%;
+  --accent: 210 20% 95%;
+  --accent-foreground: 222 22% 16%;
+  --border: 214 20% 88%;
+  --input: 214 20% 88%;
+}
+html, body, .app-shell { background: #f7f8fa !important; color: #202530 !important; }
+.sidebar { background: #ffffff !important; border-right-color: #e5e7eb !important; box-shadow: 6px 0 24px rgba(31,41,55,.04); }
+.brand-block { color: #202530 !important; }
+.brand-block span { color: #a87520 !important; }
+.nav-item { color: #687181 !important; }
+.nav-item:hover { background: #f3f5f7 !important; color: #202530 !important; }
+.nav-item-active { color: #98630e !important; background: #fff7e6 !important; box-shadow: inset 2px 0 #d99b2b; }
+.operator-card, .login-card { color: #374151 !important; background: #f8fafc !important; border-color: #e5e7eb !important; }
+.operator-avatar { background: #fff1cf !important; color: #9a650e !important; }
+.main-content, .topbar { background: #f7f8fa !important; }
+.topbar { border-bottom-color: #e5e7eb !important; }
+h1, h2, h3 { color: #202530 !important; }
+.eyebrow, .section-kicker { color: #6b7280 !important; }
+.page-intro p, .tables-heading p, .stock-hero p, .panel-help { color: #687181 !important; }
+.panel, .metric-card, .table-card, .products-panel-side .panel, .payments-history { background: #ffffff !important; border-color: #e5e7eb !important; box-shadow: 0 3px 14px rgba(31,41,55,.035); }
+.metric-card { background: linear-gradient(140deg, #ffffff, #fbfcfd) !important; }
+.metric-card > span, .rank-list span, .order-item > div:nth-child(2) strong, .table-card { color: #374151 !important; }
+.metric-card > strong, .rank-list strong, .table-totals b, .order-item > b { color: #202530 !important; }
+.date-chip, .table-filters, .search-field, .charge-box, .payment-summary, .field-label input, .field-label textarea, .field-label select, .method-grid button, .item-quantity button, .direction-toggle button, .settings-list select { background: #ffffff !important; color: #374151 !important; border-color: #d9dee7 !important; }
+.table-filters button, .table-filters button.active { color: #687181 !important; background: #f3f5f7 !important; }
+.table-card:hover { background: #fffdf8 !important; border-color: #d6b36a !important; }
+.table-card.table-occupied, .table-card.table-partial { background: #fffaf0 !important; }
+.table-time, .rank-list > div, .order-item, .bar-chart { border-color: #e5e7eb !important; }
+.table-status small, .table-totals small, .table-time, .order-item > div:nth-child(2) small, .rank-list small { color: #6b7280 !important; }
+.tab-hero { background: #ffffff !important; border-color: #e5e7eb !important; }
+.tab-hero p, .tab-hero-total span, .tab-hero-total small { color: #687181 !important; }
+.payment-summary b, .field-label input, .field-label textarea, .field-label select { color: #202530 !important; }
+.field-label { color: #4b5563 !important; }
+.field-label option { background: #ffffff !important; color: #202530 !important; }
+.payment-actions small, .local-access-note { color: #6b7280 !important; }
+.dialog-content, [data-slot="dialog-content"], .stock-sheet { background: #ffffff !important; color: #202530 !important; border-color: #e5e7eb !important; }
+[data-slot="dialog-title"], [data-slot="sheet-title"] { color: #202530 !important; }
+.demo-banner { color: #6b5735 !important; background: #fff8e8 !important; border-bottom-color: #f0dfb6 !important; }
+.demo-banner b { color: #8a5d0d !important; }
+.loading-screen { background: #f7f8fa !important; color: #687181 !important; }
+.alert-panel { background: #fff8e8 !important; border-color: #f0dfb6 !important; }
