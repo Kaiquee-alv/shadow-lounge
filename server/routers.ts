@@ -34,6 +34,8 @@ import {
   createProductPriceRule,
   setProductPriceRuleActive,
   deleteProductPriceRule,
+  getCommercialSettings,
+  updateCommercialSettings,
 } from "./db.js";
 
 const paymentMethod = z.enum(["pix", "cash", "debit", "credit", "other"]);
@@ -91,7 +93,14 @@ export const appRouter = router({
       return { success: true, expiresAt: session.expiresAt };
     }),
     logout: publicProcedure.mutation(({ ctx }) => {
-      (ctx.res as any).clearCookie("shadow_session", { path: "/" });
+      (ctx.res as any).cookie("shadow_session", "", {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        expires: new Date(0),
+        maxAge: 0,
+        path: "/",
+      });
       return { success: true } as const;
     }),
   }),
@@ -196,8 +205,6 @@ export const appRouter = router({
       return listAudit();
     }),
   }),
-  commercial: router({
-  }),
   access: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       await requireRole(ctx, ["administrator"]);
@@ -230,6 +237,21 @@ export const appRouter = router({
     deleteRule: protectedProcedure.input(z.object({ ruleId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return deleteProductPriceRule(input.ruleId, ctx.user.id);
+    }),
+  }),
+  commercial: router({
+    settings: protectedProcedure.query(async ({ ctx }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return getCommercialSettings();
+    }),
+    updateSettings: protectedProcedure.input(z.object({
+      happyHourEnabled: z.boolean(),
+      happyHourStart: z.string().regex(/^\d{2}:\d{2}$/),
+      happyHourEnd: z.string().regex(/^\d{2}:\d{2}$/),
+      happyHourDiscountPercent: z.number().int().min(0).max(100),
+    })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return updateCommercialSettings(input, ctx.user.id);
     }),
   }),
 });

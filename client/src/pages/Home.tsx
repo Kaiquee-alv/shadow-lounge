@@ -135,7 +135,7 @@ export default function Home() {
   const expenseMutation = trpc.finance.createExpense.useMutation({ onSuccess: () => { void utils.finance.expenses.invalidate(); void utils.lounge.dashboard.invalidate(); setExpenseOpen(false); setExpense({ description: "", category: "Fornecedores", amount: "", method: "pix", notes: "" }); toast.success("Despesa registrada no financeiro"); }, onError: (error) => toast.error(error.message) });
   const finishAuth = (message: string) => { setLoginOpen(false); setCredentials({ name: "", username: "", password: "" }); void utils.auth.me.invalidate(); toast.success(message); };
   const localLoginMutation = trpc.localAuth.login.useMutation({ onSuccess: () => finishAuth("Acesso liberado"), onError: (error) => toast.error(error.message) });
-  const localLogoutMutation = trpc.localAuth.logout.useMutation({ onSuccess: () => { void utils.auth.me.invalidate(); toast.success("Sessão local encerrada"); } });
+  const localLogoutMutation = trpc.localAuth.logout.useMutation({ onSuccess: () => { utils.auth.me.setData(undefined, null); void utils.auth.me.invalidate(); toast.success("Sessão local encerrada"); }, onError: (error) => toast.error(error.message) });
 
   const tables = tablesQuery.data ?? demoTables;
   const products = productsQuery.data ?? demoProducts;

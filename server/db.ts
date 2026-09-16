@@ -417,10 +417,23 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
     const scheduledRules = await tx.select().from(productPriceRules).where(and(eq(productPriceRules.productId, input.productId), eq(productPriceRules.active, true)));
     const scheduledRule = scheduledRules.find((rule) => timeInWindow(currentMinutes, rule.startTime, rule.endTime));
-    const discountPercent = 0;
     const scheduledPriceCents = scheduledRule?.priceCents ?? product[0].priceCents;
-    const unitPriceCents = scheduledPriceCents;
-    const discountReason = scheduledRule ? scheduledRule.name : null;
+    const happyHourActive = Boolean(
+      systemSettings[0]?.happyHourEnabled &&
+      timeInWindow(
+        currentMinutes,
+        systemSettings[0]?.happyHourStart ?? "17:00",
+        systemSettings[0]?.happyHourEnd ?? "19:00",
+      ),
+    );
+    const configuredDiscount = Number(systemSettings[0]?.happyHourDiscountPercent ?? 0);
+    const discountPercent = happyHourActive
+      ? Math.min(100, Math.max(0, configuredDiscount))
+      : 0;
+    const unitPriceCents = Math.round(scheduledPriceCents * (100 - discountPercent) / 100);
+    const discountReason = happyHourActive
+      ? `Happy Hour${scheduledRule ? ` + ${scheduledRule.name}` : ""}`
+      : scheduledRule?.name ?? null;
     await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${input.quantity}` }).where(eq(products.id, input.productId));
     const existing = await tx.select().from(tabItems).where(and(eq(tabItems.tabId, input.tabId), eq(tabItems.productId, input.productId))).limit(1);
     if (existing[0]) {
@@ -788,4 +801,51 @@ export async function deleteProductPriceRule(ruleId: number, userId: number) {
   if (affected !== 1) throw new Error("Regra de preço não encontrada");
   await writeAudit(userId, "DELETE_PRICE_RULE", "product_price_rule", ruleId, "Excluiu regra de preço");
   return { success: true };
+}
+
+
+export async function getCommercialSettings() {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  await ensureInitialData();
+  const rows = await db.select().from(settings).limit(1);
+  return rows[0] ?? {
+    id: 1,
+    preventNegativeStock: true,
+    allowManualDiscount: true,
+    defaultDiscountPercent: 10,
+    happyHourEnabled: false,
+    happyHourStart: "17:00",
+    happyHourEnd: "19:00",
+    happyHourDiscountPercent: 10,
+    updatedAt: new Date(),
+  };
+}
+
+export async function updateCommercialSettings(input: {
+  happyHourEnabled: boolean;
+  happyHourStart: string;
+  happyHourEnd: string;
+  happyHourDiscountPercent: number;
+}, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  await db.insert(settings).values({
+    id: 1,
+    happyHourEnabled: input.happyHourEnabled,
+    happyHourStart: input.happyHourStart,
+    happyHourEnd: input.happyHourEnd,
+    happyHourDiscountPercent: input.happyHourDiscountPercent,
+  }).onConflictDoUpdate({
+    target: settings.id,
+    set: {
+      happyHourEnabled: input.happyHourEnabled,
+      happyHourStart: input.happyHourStart,
+      happyHourEnd: input.happyHourEnd,
+      happyHourDiscountPercent: input.happyHourDiscountPercent,
+      updatedAt: new Date(),
+    },
+  });
+  await writeAudit(userId, "UPDATE_SETTINGS", "settings", 1, "Atualizou as configurações de Happy Hour");
+  return getCommercialSettings();
 }
