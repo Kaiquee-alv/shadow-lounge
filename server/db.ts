@@ -607,6 +607,18 @@ export async function saveProduct(input: { id?: number; name: string; code: stri
   return { id };
 }
 
+export async function deleteProduct(productId: number, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const product = await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.id, productId)).limit(1);
+  if (!product[0]) throw new Error("Produto não encontrado");
+  const usedInTabs = await db.select({ id: tabItems.id }).from(tabItems).where(eq(tabItems.productId, productId)).limit(1);
+  if (usedInTabs[0]) throw new Error("Este produto já foi lançado em uma comanda e não pode ser removido. Desative-o no cadastro.");
+  await db.delete(products).where(eq(products.id, productId));
+  await writeAudit(userId, "DELETE_PRODUCT", "product", productId, `Removeu ${product[0].name}`);
+  return { success: true };
+}
+
 export async function adjustStock(input: { productId: number; quantity: number; direction: "in" | "out"; reason: string }, userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");

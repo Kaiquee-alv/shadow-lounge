@@ -6,23 +6,23 @@
 }
 
 :root {
-  --background: 224 20% 7%;
-  --foreground: 34 30% 94%;
-  --card: 224 19% 10%;
-  --card-foreground: 34 30% 94%;
-  --popover: 224 19% 11%;
-  --popover-foreground: 34 30% 94%;
+  --background: 40 20% 98%;
+  --foreground: 220 18% 18%;
+  --card: 0 0% 100%;
+  --card-foreground: 220 18% 18%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 220 18% 18%;
   --primary: 35 90% 57%;
-  --primary-foreground: 224 20% 8%;
-  --secondary: 222 17% 14%;
-  --secondary-foreground: 34 18% 86%;
-  --muted: 221 14% 16%;
-  --muted-foreground: 220 11% 62%;
-  --accent: 222 17% 16%;
-  --accent-foreground: 34 30% 94%;
-  --destructive: 0 70% 58%;
-  --border: 222 14% 19%;
-  --input: 222 14% 18%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 40 18% 95%;
+  --secondary-foreground: 220 18% 24%;
+  --muted: 40 18% 95%;
+  --muted-foreground: 220 10% 48%;
+  --accent: 42 50% 94%;
+  --accent-foreground: 220 18% 18%;
+  --destructive: 0 72% 52%;
+  --border: 35 18% 88%;
+  --input: 35 18% 88%;
   --ring: 35 90% 57%;
   --radius: 1rem;
   --chart-1: 35 90% 57%;
@@ -31,15 +31,15 @@
 }
 
 * { box-sizing: border-box; }
-html { background: #101117; }
-body { margin: 0; min-width: 320px; background: #101117; color: #f4efe7; font-family: "DM Sans", sans-serif; }
+html { background: #f8f8f6; }
+body { margin: 0; min-width: 320px; background: #f8f8f6; color: #22252b; font-family: "DM Sans", sans-serif; }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 ::selection { background: #e5a83d; color: #17140f; }
 
-.app-shell { min-height: 100vh; display: flex; background: #101117; }
-.sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; width: 254px; padding: 25px 14px 16px; display: flex; flex-direction: column; background: #15151b; border-right: 1px solid rgba(255,255,255,.055); }
+.app-shell { min-height: 100vh; display: flex; background: #f8f8f6; }
+.sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; width: 254px; padding: 25px 14px 16px; display: flex; flex-direction: column; background: #fff; border-right: 1px solid #eee9df; box-shadow: 8px 0 28px rgba(35,30,20,.035); }
 .brand-block { display: flex; align-items: center; gap: 10px; padding: 0 10px; color: #f4eadc; letter-spacing: .13em; font-family: "Outfit", sans-serif; }
 .brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; color: #16120b; background: linear-gradient(145deg, #f5c65e, #cf8130); box-shadow: 0 6px 22px rgba(232,159,47,.22); }
 .brand-block strong { display: block; font-size: 16px; line-height: 15px; font-weight: 800; }
@@ -62,7 +62,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .login-card:hover { background: #28222b; }
 
 .main-content { width: calc(100% - 254px); min-height: 100vh; margin-left: 254px; }
-.topbar { height: 92px; padding: 0 42px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,.05); background: rgba(16,17,23,.88); }
+.topbar { height: 92px; padding: 0 42px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee9df; background: rgba(255,255,255,.9); }
 .topbar-left { display: flex; align-items: center; gap: 12px; }
 .eyebrow, .section-kicker { margin: 0; color: #8b8a94; font-size: 10px; letter-spacing: .1em; font-weight: 700; text-transform: uppercase; }
 .eyebrow span { padding: 0 5px; color: #dba43e; }
