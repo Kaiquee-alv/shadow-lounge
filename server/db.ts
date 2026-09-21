@@ -92,6 +92,8 @@ export async function ensureInitialData() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
 
+  // Mantém instalações existentes compatíveis com o campo adicionado depois do schema inicial.
+  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index) => ({ number: index + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({ target: productCategories.name,
     set: { active: true },
@@ -409,9 +411,13 @@ export async function openTab(tableId: number, userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    const changed = await tx.update(loungeTables).set({ status: "occupied" }).where(and(eq(loungeTables.id, tableId), eq(loungeTables.status, "free")));
-    const affected = (changed as unknown as { rowCount: number }).rowCount ?? 0;
-    if (affected !== 1) throw new Error("Esta mesa já possui uma comanda aberta");
+    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${tableId} FOR UPDATE`);
+    const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, tableId)).limit(1);
+    if (!table[0]) throw new Error("Mesa não encontrada");
+    const existingOpenTab = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, tableId), eq(tabs.status, "open"))).limit(1);
+    if (existingOpenTab[0]) throw new Error("Esta mesa já possui uma comanda aberta");
+    // Corrige status/activeTabId antigos ou órfãos antes de abrir uma nova comanda.
+    await tx.update(loungeTables).set({ status: "occupied", activeTabId: null, updatedAt: new Date() }).where(eq(loungeTables.id, tableId));
     const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId }).returning({ id: tabs.id });
     const tabId = Number(inserted[0].id);
     const tabCode = `#${String(tabId).padStart(6, "0")}`;

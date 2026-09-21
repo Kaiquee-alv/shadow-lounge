@@ -178,6 +178,7 @@ export default function Home() {
       requireAuth(() => openTabMutation.mutate({ tableId: table.id }));
       return;
     }
+    if (table.tabId) utils.lounge.tab.setData({ tabId: table.tabId }, undefined);
     setSelectedTabId(table.tabId);
   };
 

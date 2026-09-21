@@ -530,6 +530,7 @@ var productsSeed = [
 async function ensureInitialData() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index2) => ({ number: index2 + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({
     target: productCategories.name,
@@ -814,9 +815,12 @@ async function openTab(tableId, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   return db.transaction(async (tx) => {
-    const changed = await tx.update(loungeTables).set({ status: "occupied" }).where(and(eq(loungeTables.id, tableId), eq(loungeTables.status, "free")));
-    const affected = changed.rowCount ?? 0;
-    if (affected !== 1) throw new Error("Esta mesa j\xE1 possui uma comanda aberta");
+    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${tableId} FOR UPDATE`);
+    const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, tableId)).limit(1);
+    if (!table[0]) throw new Error("Mesa n\xE3o encontrada");
+    const existingOpenTab = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, tableId), eq(tabs.status, "open"))).limit(1);
+    if (existingOpenTab[0]) throw new Error("Esta mesa j\xE1 possui uma comanda aberta");
+    await tx.update(loungeTables).set({ status: "occupied", activeTabId: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq(loungeTables.id, tableId));
     const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId }).returning({ id: tabs.id });
     const tabId = Number(inserted[0].id);
     const tabCode = `#${String(tabId).padStart(6, "0")}`;
