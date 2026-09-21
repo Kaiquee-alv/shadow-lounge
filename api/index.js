@@ -437,6 +437,7 @@ var expenses = pgTable(
 var settings = pgTable("settings", {
   id: serial("id").primaryKey(),
   preventNegativeStock: boolean("preventNegativeStock").default(true).notNull(),
+  maxTables: integer("maxTables").default(20).notNull(),
   allowManualDiscount: boolean("allowManualDiscount").default(true).notNull(),
   defaultDiscountPercent: integer("defaultDiscountPercent").default(10).notNull(),
   happyHourEnabled: boolean("happyHourEnabled").default(false).notNull(),
@@ -536,7 +537,7 @@ async function ensureInitialData() {
     target: productCategories.name,
     set: { active: true }
   });
-  await db.insert(settings).values({ id: 1, preventNegativeStock: true }).onConflictDoNothing({ target: settings.id });
+  await db.insert(settings).values({ id: 1, preventNegativeStock: true, maxTables: 20 }).onConflictDoNothing({ target: settings.id });
   const categories = await db.select().from(productCategories);
   const categoryByName = new Map(categories.map((category) => [category.name, category.id]));
   for (const product of productsSeed) {
@@ -717,7 +718,9 @@ async function listTables() {
   await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
-  const tableRows = await db.select().from(loungeTables).orderBy(asc(loungeTables.number));
+  const configuredSettings = await db.select({ maxTables: settings.maxTables }).from(settings).limit(1);
+  const maxTables = configuredSettings[0]?.maxTables ?? 20;
+  const tableRows = (await db.select().from(loungeTables).orderBy(asc(loungeTables.number))).filter((table) => table.number <= maxTables);
   const openTabs = await db.select().from(tabs).where(eq(tabs.status, "open"));
   const tabIds = openTabs.map((tab) => tab.id);
   const [allItems, allPayments] = tabIds.length ? await Promise.all([
@@ -1246,6 +1249,7 @@ async function getCommercialSettings() {
   return rows[0] ?? {
     id: 1,
     preventNegativeStock: true,
+    maxTables: 20,
     allowManualDiscount: true,
     defaultDiscountPercent: 10,
     happyHourEnabled: false,
@@ -1254,6 +1258,23 @@ async function getCommercialSettings() {
     happyHourDiscountPercent: 10,
     updatedAt: /* @__PURE__ */ new Date()
   };
+}
+async function updateTableLimit(maxTables, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  const normalized = Math.min(100, Math.max(1, Math.round(maxTables)));
+  await ensureInitialData();
+  return db.transaction(async (tx) => {
+    const openOutsideLimit = await tx.select({ id: tabs.id, number: loungeTables.number }).from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).where(and(eq(tabs.status, "open"), sql`${loungeTables.number} > ${normalized}`)).limit(1);
+    if (openOutsideLimit[0]) throw new Error(`Feche ou transfira a comanda da mesa ${openOutsideLimit[0].number} antes de reduzir o limite`);
+    const existingTables = await tx.select({ number: loungeTables.number }).from(loungeTables).orderBy(asc(loungeTables.number));
+    const existingNumbers = new Set(existingTables.map((table) => table.number));
+    const missingTables = Array.from({ length: normalized }, (_, index2) => index2 + 1).filter((number) => !existingNumbers.has(number)).map((number) => ({ number }));
+    if (missingTables.length) await tx.insert(loungeTables).values(missingTables).onConflictDoNothing({ target: loungeTables.number });
+    await tx.insert(settings).values({ id: 1, maxTables: normalized }).onConflictDoUpdate({ target: settings.id, set: { maxTables: normalized, updatedAt: /* @__PURE__ */ new Date() } });
+    await tx.insert(auditLogs).values({ userId, action: "UPDATE_TABLE_LIMIT", entityType: "settings", entityId: 1, description: `Definiu o limite de mesas em ${normalized}` });
+    return { maxTables: normalized };
+  });
 }
 async function updateCommercialSettings(input, userId) {
   const db = await getDb();
@@ -1514,6 +1535,10 @@ var appRouter = router({
     })
   }),
   commercial: router({
+    updateTableLimit: protectedProcedure.input(z2.object({ maxTables: z2.number().int().min(1).max(100) })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return updateTableLimit(input.maxTables, ctx.user.id);
+    }),
     settings: protectedProcedure.query(async ({ ctx }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return getCommercialSettings();
