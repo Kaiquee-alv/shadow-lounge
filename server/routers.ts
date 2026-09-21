@@ -39,6 +39,7 @@ import {
   deleteProductPriceRule,
   getCommercialSettings,
   updateCommercialSettings,
+  updateTableLimit,
 } from "./db.js";
 
 const paymentMethod = z.enum(["pix", "cash", "debit", "credit", "other"]);
@@ -255,6 +256,10 @@ export const appRouter = router({
     }),
   }),
   commercial: router({
+    updateTableLimit: protectedProcedure.input(z.object({ maxTables: z.number().int().min(1).max(100) })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return updateTableLimit(input.maxTables, ctx.user.id);
+    }),
     settings: protectedProcedure.query(async ({ ctx }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return getCommercialSettings();

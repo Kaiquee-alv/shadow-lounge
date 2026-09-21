@@ -241,6 +241,7 @@ export const expenses = pgTable(
 export const settings = pgTable("settings", {
   id: serial("id").primaryKey(),
   preventNegativeStock: boolean("preventNegativeStock").default(true).notNull(),
+  maxTables: integer("maxTables").default(20).notNull(),
   allowManualDiscount: boolean("allowManualDiscount").default(true).notNull(),
   defaultDiscountPercent: integer("defaultDiscountPercent").default(10).notNull(),
   happyHourEnabled: boolean("happyHourEnabled").default(false).notNull(),
