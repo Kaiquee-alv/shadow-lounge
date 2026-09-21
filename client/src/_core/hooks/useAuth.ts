@@ -27,6 +27,11 @@ export function useAuth(options?: UseAuthOptions) {
     },
   });
 
+  const cachedUser = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    try { return JSON.parse(localStorage.getItem("manus-runtime-user-info") ?? "null"); } catch { return null; }
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await logoutMutation.mutateAsync();
@@ -51,15 +56,13 @@ export function useAuth(options?: UseAuthOptions) {
   }, [logoutMutation, utils]);
 
   const state = useMemo(() => {
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(meQuery.data)
-    );
+    if (meQuery.data) localStorage.setItem("manus-runtime-user-info", JSON.stringify(meQuery.data));
+    const offlineUser = !meQuery.data && typeof navigator !== "undefined" && !navigator.onLine ? cachedUser : null;
     return {
-      user: meQuery.data ?? null,
-      loading: meQuery.isLoading || logoutMutation.isPending,
+      user: meQuery.data ?? offlineUser,
+      loading: (meQuery.isLoading && !offlineUser) || logoutMutation.isPending,
       error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(meQuery.data),
+      isAuthenticated: Boolean(meQuery.data ?? offlineUser),
     };
   }, [
     meQuery.data,
@@ -67,6 +70,7 @@ export function useAuth(options?: UseAuthOptions) {
     meQuery.isLoading,
     logoutMutation.error,
     logoutMutation.isPending,
+    cachedUser,
   ]);
 
   useEffect(() => {

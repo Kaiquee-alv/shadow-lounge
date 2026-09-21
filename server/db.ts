@@ -94,6 +94,7 @@ export async function ensureInitialData() {
 
   // Mantém instalações existentes compatíveis com o campo adicionado depois do schema inicial.
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
+  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index) => ({ number: index + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({ target: productCategories.name,
@@ -428,6 +429,59 @@ export async function openTab(tableId: number, userId: number) {
     await tx.update(loungeTables).set({ activeTabId: tabId, status: "occupied" }).where(eq(loungeTables.id, tableId));
     await tx.insert(auditLogs).values({ userId, action: "OPEN_TAB", entityType: "tab", entityId: tabId, description: `Abriu a comanda ${tabCode}` });
     return { id: tabId, tabCode };
+  });
+}
+
+export async function syncOfflineTab(input: {
+  offlineKey: string;
+  deviceId: string;
+  tableId: number;
+  customerName?: string | null;
+  tipPercent: 0 | 10;
+  items: Array<{ productId: number; productName: string; quantity: number; note?: string | null }>;
+  payments: Array<{ amountCents: number; method: "pix" | "cash" | "debit" | "credit" | "other"; requestKey: string }>;
+}, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  return db.transaction(async (tx) => {
+    const existing = await tx.select({ id: tabs.id, tabCode: tabs.tabCode }).from(tabs).where(eq(tabs.offlineKey, input.offlineKey)).limit(1);
+    if (existing[0]) return { tabId: existing[0].id, tabCode: existing[0].tabCode, duplicate: true };
+    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${input.tableId} FOR UPDATE`);
+    const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, input.tableId)).limit(1);
+    if (!table[0]) throw new Error("Mesa não encontrada");
+    const open = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, input.tableId), eq(tabs.status, "open"))).limit(1);
+    if (open[0]) throw new Error(`A mesa ${table[0].number} já possui uma comanda aberta`);
+    const inserted = await tx.insert(tabs).values({ tableId: input.tableId, tabCode: `OFFLINE-${Date.now()}`, offlineKey: input.offlineKey, customerName: input.customerName?.trim() || null, openedBy: userId }).returning({ id: tabs.id });
+    const tabId = Number(inserted[0].id);
+    const tabCode = `#${String(tabId).padStart(6, "0")}`;
+    await tx.update(tabs).set({ tabCode }).where(eq(tabs.id, tabId));
+    let subtotalCents = 0;
+    for (const item of input.items) {
+      if (item.quantity < 1 || item.quantity > 99) throw new Error("Quantidade de produto inválida");
+      await tx.execute(sql`SELECT id FROM products WHERE id = ${item.productId} FOR UPDATE`);
+      const product = await tx.select().from(products).where(eq(products.id, item.productId)).limit(1);
+      if (!product[0] || !product[0].active) throw new Error(`Produto indisponível: ${item.productName}`);
+      const systemSettings = await tx.select().from(settings).limit(1);
+      if (systemSettings[0]?.preventNegativeStock && product[0].stockQuantity < item.quantity) throw new Error(`Estoque insuficiente para ${product[0].name}`);
+      await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${item.quantity}` }).where(eq(products.id, product[0].id));
+      await tx.insert(tabItems).values({ tabId, productId: product[0].id, productName: product[0].name, quantity: item.quantity, baseUnitPriceCents: product[0].priceCents, unitPriceCents: product[0].priceCents, unitCostCents: product[0].costCents, note: item.note ?? null, addedBy: userId });
+      await tx.insert(stockMovements).values({ productId: product[0].id, quantity: item.quantity, direction: "out", reason: "Venda em comanda offline", referenceType: "tab", referenceId: tabId, createdBy: userId });
+      subtotalCents += item.quantity * product[0].priceCents;
+    }
+    const tipCents = Math.round(subtotalCents * input.tipPercent / 100);
+    await tx.update(tabs).set({ tipPercent: input.tipPercent, tipCents }).where(eq(tabs.id, tabId));
+    let paidCents = 0;
+    for (const payment of input.payments) {
+      if (payment.amountCents <= 0) throw new Error("Pagamento offline inválido");
+      const duplicatePayment = await tx.select({ id: payments.id }).from(payments).where(eq(payments.requestKey, payment.requestKey)).limit(1);
+      if (duplicatePayment[0]) continue;
+      if (paidCents + payment.amountCents > subtotalCents + tipCents) throw new Error("Os pagamentos superam o total da comanda");
+      await tx.insert(payments).values({ tabId, amountCents: payment.amountCents, method: payment.method, requestKey: payment.requestKey, receivedBy: userId });
+      paidCents += payment.amountCents;
+    }
+    await tx.update(loungeTables).set({ activeTabId: tabId, status: paidCents === subtotalCents + tipCents ? "occupied" : paidCents > 0 ? "partial" : "occupied", updatedAt: new Date() }).where(eq(loungeTables.id, input.tableId));
+    await tx.insert(auditLogs).values({ userId, action: "SYNC_OFFLINE_TAB", entityType: "tab", entityId: tabId, description: `Sincronizou a comanda offline ${tabCode} do dispositivo ${input.deviceId.slice(-12)}` });
+    return { tabId, tabCode, duplicate: false };
   });
 }
 

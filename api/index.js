@@ -347,6 +347,7 @@ var tabs = pgTable(
     id: serial("id").primaryKey(),
     tableId: integer("tableId").notNull().references(() => loungeTables.id),
     tabCode: varchar("tabCode", { length: 24 }).notNull(),
+    offlineKey: varchar("offlineKey", { length: 80 }),
     customerName: varchar("customerName", { length: 120 }),
     status: tabStatusEnum("status").default("open").notNull(),
     openedBy: integer("openedBy").notNull().references(() => users.id),
@@ -361,6 +362,7 @@ var tabs = pgTable(
   },
   (table) => [
     uniqueIndex("tabs_code_unique").on(table.tabCode),
+    uniqueIndex("tabs_offline_key_unique").on(table.offlineKey),
     index("tabs_table_status_idx").on(table.tableId, table.status)
   ]
 );
@@ -532,6 +534,7 @@ async function ensureInitialData() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
+  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index2) => ({ number: index2 + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({
@@ -832,6 +835,50 @@ async function openTab(tableId, userId) {
     await tx.update(loungeTables).set({ activeTabId: tabId, status: "occupied" }).where(eq(loungeTables.id, tableId));
     await tx.insert(auditLogs).values({ userId, action: "OPEN_TAB", entityType: "tab", entityId: tabId, description: `Abriu a comanda ${tabCode}` });
     return { id: tabId, tabCode };
+  });
+}
+async function syncOfflineTab(input, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  return db.transaction(async (tx) => {
+    const existing = await tx.select({ id: tabs.id, tabCode: tabs.tabCode }).from(tabs).where(eq(tabs.offlineKey, input.offlineKey)).limit(1);
+    if (existing[0]) return { tabId: existing[0].id, tabCode: existing[0].tabCode, duplicate: true };
+    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${input.tableId} FOR UPDATE`);
+    const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, input.tableId)).limit(1);
+    if (!table[0]) throw new Error("Mesa n\xE3o encontrada");
+    const open = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, input.tableId), eq(tabs.status, "open"))).limit(1);
+    if (open[0]) throw new Error(`A mesa ${table[0].number} j\xE1 possui uma comanda aberta`);
+    const inserted = await tx.insert(tabs).values({ tableId: input.tableId, tabCode: `OFFLINE-${Date.now()}`, offlineKey: input.offlineKey, customerName: input.customerName?.trim() || null, openedBy: userId }).returning({ id: tabs.id });
+    const tabId = Number(inserted[0].id);
+    const tabCode = `#${String(tabId).padStart(6, "0")}`;
+    await tx.update(tabs).set({ tabCode }).where(eq(tabs.id, tabId));
+    let subtotalCents = 0;
+    for (const item of input.items) {
+      if (item.quantity < 1 || item.quantity > 99) throw new Error("Quantidade de produto inv\xE1lida");
+      await tx.execute(sql`SELECT id FROM products WHERE id = ${item.productId} FOR UPDATE`);
+      const product = await tx.select().from(products).where(eq(products.id, item.productId)).limit(1);
+      if (!product[0] || !product[0].active) throw new Error(`Produto indispon\xEDvel: ${item.productName}`);
+      const systemSettings = await tx.select().from(settings).limit(1);
+      if (systemSettings[0]?.preventNegativeStock && product[0].stockQuantity < item.quantity) throw new Error(`Estoque insuficiente para ${product[0].name}`);
+      await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${item.quantity}` }).where(eq(products.id, product[0].id));
+      await tx.insert(tabItems).values({ tabId, productId: product[0].id, productName: product[0].name, quantity: item.quantity, baseUnitPriceCents: product[0].priceCents, unitPriceCents: product[0].priceCents, unitCostCents: product[0].costCents, note: item.note ?? null, addedBy: userId });
+      await tx.insert(stockMovements).values({ productId: product[0].id, quantity: item.quantity, direction: "out", reason: "Venda em comanda offline", referenceType: "tab", referenceId: tabId, createdBy: userId });
+      subtotalCents += item.quantity * product[0].priceCents;
+    }
+    const tipCents = Math.round(subtotalCents * input.tipPercent / 100);
+    await tx.update(tabs).set({ tipPercent: input.tipPercent, tipCents }).where(eq(tabs.id, tabId));
+    let paidCents = 0;
+    for (const payment of input.payments) {
+      if (payment.amountCents <= 0) throw new Error("Pagamento offline inv\xE1lido");
+      const duplicatePayment = await tx.select({ id: payments.id }).from(payments).where(eq(payments.requestKey, payment.requestKey)).limit(1);
+      if (duplicatePayment[0]) continue;
+      if (paidCents + payment.amountCents > subtotalCents + tipCents) throw new Error("Os pagamentos superam o total da comanda");
+      await tx.insert(payments).values({ tabId, amountCents: payment.amountCents, method: payment.method, requestKey: payment.requestKey, receivedBy: userId });
+      paidCents += payment.amountCents;
+    }
+    await tx.update(loungeTables).set({ activeTabId: tabId, status: paidCents === subtotalCents + tipCents ? "occupied" : paidCents > 0 ? "partial" : "occupied", updatedAt: /* @__PURE__ */ new Date() }).where(eq(loungeTables.id, input.tableId));
+    await tx.insert(auditLogs).values({ userId, action: "SYNC_OFFLINE_TAB", entityType: "tab", entityId: tabId, description: `Sincronizou a comanda offline ${tabCode} do dispositivo ${input.deviceId.slice(-12)}` });
+    return { tabId, tabCode, duplicate: false };
   });
 }
 async function transferTab(tabId, destinationTableId, userId) {
@@ -1391,6 +1438,18 @@ var appRouter = router({
     openTab: protectedProcedure.input(z2.object({ tableId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);
       return openTab(input.tableId, ctx.user.id);
+    }),
+    syncOfflineTab: protectedProcedure.input(z2.object({
+      offlineKey: z2.string().min(8).max(80),
+      deviceId: z2.string().min(3).max(120),
+      tableId: z2.number().int().positive(),
+      customerName: z2.string().trim().max(120).nullable().optional(),
+      tipPercent: z2.union([z2.literal(0), z2.literal(10)]),
+      items: z2.array(z2.object({ productId: z2.number().int().positive(), productName: z2.string().max(160), quantity: z2.number().int().min(1).max(99), note: z2.string().max(500).nullable().optional() })).max(100),
+      payments: z2.array(z2.object({ amountCents: z2.number().int().positive(), method: paymentMethod, requestKey: z2.string().min(8).max(80) })).max(20)
+    })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return syncOfflineTab(input, ctx.user.id);
     }),
     transferTab: protectedProcedure.input(z2.object({ tabId: z2.number().int().positive(), destinationTableId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);

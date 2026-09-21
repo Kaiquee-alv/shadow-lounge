@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { cached, createOfflineTab, getOfflineTabById, getOfflineTabByTable, getOfflineTabs, isOffline, offlineTabView, offlineTotals, removeOfflineTab, saveOfflineTab } from "@/lib/offline";
 import { toast } from "sonner";
 import {
   AlertTriangle, ArrowDownRight, ArrowUpRight, ArrowRightLeft, BarChart3, Banknote, Beer, ChevronLeft, Printer,
@@ -101,6 +102,9 @@ export default function Home() {
   const [newProduct, setNewProduct] = useState({ name: "", code: "", categoryId: 1, unit: "un", cost: "", price: "", stock: "", minimum: "" });
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [expense, setExpense] = useState({ description: "", category: "Fornecedores", amount: "", method: "pix" as Method, notes: "" });
+  const [connectionOnline, setConnectionOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
+  const [offlineTabs, setOfflineTabs] = useState(() => getOfflineTabs());
+  const [offlineSyncBlocked, setOfflineSyncBlocked] = useState(false);
   const utils = trpc.useUtils();
 
   const dashboardQuery = trpc.lounge.dashboard.useQuery({ rangeDays: 30 }, { enabled: isAuthenticated, retry: false });
@@ -114,7 +118,7 @@ export default function Home() {
   const historyInput = useMemo(() => ({ from: historyFrom ? new Date(`${historyFrom}T00:00:00`) : undefined, to: historyTo ? new Date(`${historyTo}T23:59:59.999`) : undefined }), [historyFrom, historyTo]);
   const historyQuery = trpc.productHistory.list.useQuery(historyInput, { enabled: isAuthenticated && page === "reports", retry: false });
   const pricingRulesQuery = trpc.pricing.rules.useQuery(undefined, { enabled: isAuthenticated && page === "settings", retry: false });
-  const tabQuery = trpc.lounge.tab.useQuery({ tabId: selectedTabId ?? 1 }, { enabled: isAuthenticated && !!selectedTabId, retry: false });
+  const tabQuery = trpc.lounge.tab.useQuery({ tabId: selectedTabId && selectedTabId > 0 ? selectedTabId : 1 }, { enabled: isAuthenticated && !!selectedTabId && selectedTabId > 0, retry: false });
 
   const refreshOperationalData = () => {
     void utils.lounge.tables.invalidate();
@@ -154,16 +158,41 @@ export default function Home() {
   const finishAuth = (message: string) => { setLoginOpen(false); setCredentials({ name: "", username: "", password: "" }); void utils.auth.me.invalidate(); toast.success(message); };
   const localLoginMutation = trpc.localAuth.login.useMutation({ onSuccess: () => finishAuth("Acesso liberado"), onError: (error) => toast.error(error.message) });
   const localLogoutMutation = trpc.localAuth.logout.useMutation({ onSuccess: () => { utils.auth.me.setData(undefined, null); void utils.auth.me.invalidate(); toast.success("Sessão local encerrada"); }, onError: (error) => toast.error(error.message) });
+  const syncOfflineMutation = trpc.lounge.syncOfflineTab.useMutation({ onSuccess: (result, variables) => { removeOfflineTab(variables.offlineKey); setOfflineTabs(getOfflineTabs()); setOfflineSyncBlocked(false); if (selectedTabId && selectedTabId < 0) setSelectedTabId(result.tabId); void utils.lounge.tables.invalidate(); void utils.lounge.tab.invalidate({ tabId: result.tabId }); toast.success("Comanda offline sincronizada"); }, onError: (error) => { setOfflineSyncBlocked(true); toast.error(`Sincronização pendente: ${error.message}`); } });
 
-  const tables = tablesQuery.data ?? demoTables;
-  const products = productsQuery.data ?? demoProducts;
+  useEffect(() => {
+    const goOnline = () => { setConnectionOnline(true); setOfflineSyncBlocked(false); };
+    const goOffline = () => { setConnectionOnline(false); setOfflineSyncBlocked(false); };
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
+  }, []);
+  useEffect(() => { if (productsQuery.data) cached("products", productsQuery.data); }, [productsQuery.data]);
+  useEffect(() => { if (tablesQuery.data) cached("tables", tablesQuery.data); }, [tablesQuery.data]);
+
+  const cachedTables = cached<any[]>("tables") ?? demoTables;
+  const cachedProducts = cached<any[]>("products") ?? demoProducts;
+  const tables = (tablesQuery.data ?? cachedTables).map((table: any) => {
+    const offlineTab = getOfflineTabByTable(table.id);
+    if (!offlineTab) return table;
+    const view = offlineTabView(offlineTab);
+    return { ...table, status: "occupied", tabId: offlineTab.id, tabCode: offlineTab.tabCode, customerName: offlineTab.customerName, openedAt: offlineTab.createdAt, totalCents: view.totalCents, paidCents: view.paidCents, balanceCents: view.balanceCents };
+  });
+  const products = productsQuery.data ?? cachedProducts;
   const dashboard = dashboardQuery.data ?? demoDashboard;
   // Não use a comanda demonstrativa como fallback quando uma comanda real foi selecionada:
   // isso fazia os itens lançados aparecerem brevemente enquanto a consulta carregava.
-  const activeTab = selectedTabId ? (tabQuery.data ?? null) : null;
+  const activeOfflineTab = selectedTabId && selectedTabId < 0 ? getOfflineTabById(selectedTabId) : null;
+  const activeTab = selectedTabId ? (activeOfflineTab ? offlineTabView(activeOfflineTab) : tabQuery.data ?? null) : null;
   useEffect(() => { if (activeTab) setTipEnabled((activeTab as any).tipPercent === 10); }, [activeTab?.id, (activeTab as any)?.tipPercent]);
   const filteredProducts = useMemo(() => products.filter((product) => `${product.name} ${product.code} ${product.categoryName ?? ""}`.toLocaleLowerCase().includes(productSearch.toLocaleLowerCase())), [products, productSearch]);
   const occupiedCount = tables.filter((table) => table.status !== "free").length;
+
+  useEffect(() => {
+    if (!connectionOnline || !isAuthenticated || offlineSyncBlocked || syncOfflineMutation.isPending || !offlineTabs.length) return;
+    const queued = offlineTabs[0];
+    syncOfflineMutation.mutate({ offlineKey: queued.offlineKey, deviceId: queued.deviceId, tableId: queued.tableId, customerName: queued.customerName, tipPercent: queued.tipPercent, items: queued.items.map((item) => ({ productId: item.productId, productName: item.productName, quantity: item.quantity, note: item.note ?? null })), payments: queued.payments.map((payment) => ({ amountCents: payment.amountCents, method: payment.method, requestKey: payment.requestKey })) });
+  }, [connectionOnline, isAuthenticated, offlineSyncBlocked, offlineTabs, syncOfflineMutation.isPending]);
 
   const requireAuth = (action: () => void) => {
     if (!isAuthenticated) {
@@ -176,9 +205,25 @@ export default function Home() {
 
   const endSession = () => user?.loginMethod?.startsWith("local") ? localLogoutMutation.mutate() : logout();
 
+  const openOfflineTab = (table: any) => {
+    const tab = createOfflineTab(table);
+    saveOfflineTab(tab);
+    setOfflineTabs(getOfflineTabs());
+    setSelectedTabId(tab.id);
+    toast.success(`Comanda offline aberta na mesa ${table.number}`);
+  };
+
+  const updateOfflineTab = (tab: any, updater: (current: any) => any) => {
+    const current = getOfflineTabById(tab.id);
+    if (!current) return;
+    const updated = updater(current);
+    saveOfflineTab(updated);
+    setOfflineTabs(getOfflineTabs());
+  };
+
   const selectTable = (table: any) => {
     if (table.status === "free") {
-      requireAuth(() => openTabMutation.mutate({ tableId: table.id }));
+      requireAuth(() => connectionOnline ? openTabMutation.mutate({ tableId: table.id }) : openOfflineTab(table));
       return;
     }
     if (table.tabId) utils.lounge.tab.setData({ tabId: table.tabId }, undefined);
@@ -194,8 +239,25 @@ export default function Home() {
 
   const confirmAddProduct = () => requireAuth(() => {
     if (!selectedTabId || !pendingProduct) return;
+    if (selectedTabId < 0) {
+      updateOfflineTab({ id: selectedTabId }, (current) => {
+        const existing = current.items.find((item: any) => item.productId === pendingProduct.id);
+        const items = existing ? current.items.map((item: any) => item.productId === pendingProduct.id ? { ...item, quantity: item.quantity + 1, note: itemNote.trim() || item.note } : item) : [...current.items, { id: `${current.offlineKey}-${pendingProduct.id}`, productId: pendingProduct.id, productName: pendingProduct.name, quantity: 1, unitPriceCents: pendingProduct.priceCents, unitCostCents: pendingProduct.costCents, note: itemNote.trim() || null, createdAt: new Date().toISOString() }];
+        return { ...current, items };
+      });
+      setNoteOpen(false); setPendingProduct(null); setItemNote("");
+      return;
+    }
     addItemMutation.mutate({ tabId: selectedTabId, productId: pendingProduct.id, quantity: 1, note: itemNote.trim() || undefined });
   });
+
+  const changeItemQuantity = (itemId: number, quantity: number) => {
+    if (selectedTabId && selectedTabId < 0) {
+      updateOfflineTab({ id: selectedTabId }, (current) => ({ ...current, items: current.items.map((item: any) => item.id === itemId ? { ...item, quantity } : item).filter((item: any) => item.quantity > 0) }));
+      return;
+    }
+    requireAuth(() => setItemMutation.mutate({ itemId, quantity }));
+  };
 
   const printTab = () => {
     if (!activeTab) return;
@@ -211,11 +273,19 @@ export default function Home() {
     if (!activeTab) return;
     const cents = Math.round(Number(paymentValue.replace(",", ".")) * 100);
     if (!Number.isFinite(cents) || cents <= 0) { toast.error("Informe um valor de pagamento válido"); return; }
+    if (activeTab.id < 0) {
+      const totals = offlineTotals(activeOfflineTab!);
+      if (cents > totals.balanceCents) { toast.error("O pagamento não pode superar o saldo pendente"); return; }
+      updateOfflineTab(activeTab, (current) => ({ ...current, payments: [...current.payments, { id: `${current.offlineKey}-payment-${Date.now()}`, amountCents: cents, method: paymentMethod, requestKey: `${current.offlineKey}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, createdAt: new Date().toISOString() }] }));
+      setPaymentOpen(false); setPaymentValue(""); toast.success("Pagamento salvo offline");
+      return;
+    }
     payMutation.mutate({ tabId: activeTab.id, amountCents: cents, method: paymentMethod, requestKey: `${activeTab.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
   });
 
   const toggleTip = (checked: boolean) => {
     setTipEnabled(checked);
+    if (activeOfflineTab) { updateOfflineTab(activeOfflineTab, (current) => ({ ...current, tipPercent: checked ? 10 : 0 })); toast.success("Gorjeta salva offline"); return; }
     if (activeTab) requireAuth(() => chargesMutation.mutate({ tabId: activeTab.id, tipPercent: checked ? 10 : 0 }));
   };
 
@@ -247,7 +317,7 @@ export default function Home() {
       <main className="main-content">
         <header className="topbar">
           <div className="topbar-left"><button className="icon-btn menu-toggle" onClick={() => setMobileNav(true)} aria-label="Abrir menu"><Menu size={21} /></button><div><p className="eyebrow">SHADOW LOUNGE <span>/</span> {page === "tables" ? "ATENDIMENTO" : page.toUpperCase()}</p><h1>{page === "tables" ? "Mesas" : page === "dashboard" ? "Visão geral" : page === "products" ? "Produtos" : page === "stock" ? "Estoque" : page === "finance" ? "Financeiro" : page === "reports" ? "Relatórios" : page === "users" ? "Usuários e auditoria" : "Configurações"}</h1></div></div>
-          <div className="topbar-actions"><div className="date-chip"><Clock3 size={16} /><span>{new Intl.DateTimeFormat("pt-BR", { weekday: "short", day: "2-digit", month: "short" }).format(new Date())}</span></div>{!isAuthenticated && <Button className="login-button" onClick={() => setLoginOpen(true)}><LogIn size={16} /> Entrar</Button>}</div>
+          <div className="topbar-actions"><div className="date-chip"><span className={connectionOnline ? "pulse-dot" : "danger"} /> {connectionOnline ? "Online" : "Offline"}{offlineTabs.length ? ` · ${offlineTabs.length} pendente${offlineTabs.length > 1 ? "s" : ""}` : ""}</div><div className="date-chip"><Clock3 size={16} /><span>{new Intl.DateTimeFormat("pt-BR", { weekday: "short", day: "2-digit", month: "short" }).format(new Date())}</span></div>{!isAuthenticated && <Button className="login-button" onClick={() => setLoginOpen(true)}><LogIn size={16} /> Entrar</Button>}</div>
         </header>
 
         {!isAuthenticated && <div className="demo-banner"><Sparkles size={17} /><span><b>Visão demonstrativa</b> — entre para abrir comandas, registrar pagamentos e persistir os dados.</span><button onClick={() => setLoginOpen(true)}>Acessar operação <ArrowUpRight size={15} /></button></div>}
@@ -256,7 +326,7 @@ export default function Home() {
           {page === "dashboard" && <Dashboard dashboard={dashboard} occupiedCount={occupiedCount} onNavigate={setPage} />}
           {page === "tables" && !activeTab && !selectedTabId && <TablesGrid tables={tables} onSelect={selectTable} isOpening={openTabMutation.isPending} />}
           {page === "tables" && selectedTabId && !activeTab && <div className="loading-screen inline-loading"><div className="loading-mark"><ReceiptText size={24} /></div><span>Carregando comanda...</span></div>}
-          {page === "tables" && activeTab && <TabDetail tab={activeTab} products={filteredProducts} search={productSearch} setSearch={setProductSearch} tipEnabled={tipEnabled} setTipEnabled={toggleTip} onApplyCharges={() => activeTab && chargesMutation.mutate({ tabId: activeTab.id, tipPercent: tipEnabled ? 10 : 0 })} onBack={() => setSelectedTabId(null)} onName={() => { setCustomerNameInput(activeTab.customerName ?? ""); setCustomerNameOpen(true); }} onPrint={printTab} onAdd={(product: any) => addProduct(product)} onQuantity={(id: number, quantity: number) => requireAuth(() => setItemMutation.mutate({ itemId: id, quantity }))} onPayment={() => { setPaymentValue((activeTab.balanceCents / 100).toFixed(2)); setPaymentOpen(true); }} onTransfer={() => { setTransferDestination(null); setTransferOpen(true); }} onClose={() => requireAuth(() => closeMutation.mutate({ tabId: activeTab.id }))} loading={addItemMutation.isPending || setItemMutation.isPending || payMutation.isPending || closeMutation.isPending || chargesMutation.isPending || transferMutation.isPending || customerNameMutation.isPending} />}
+          {page === "tables" && activeTab && <TabDetail tab={activeTab} products={filteredProducts} search={productSearch} setSearch={setProductSearch} tipEnabled={tipEnabled} setTipEnabled={toggleTip} onApplyCharges={() => activeTab && chargesMutation.mutate({ tabId: activeTab.id, tipPercent: tipEnabled ? 10 : 0 })} onBack={() => setSelectedTabId(null)} onName={() => { setCustomerNameInput(activeTab.customerName ?? ""); setCustomerNameOpen(true); }} onPrint={printTab} onAdd={(product: any) => addProduct(product)} onQuantity={changeItemQuantity} onPayment={() => { setPaymentValue((activeTab.balanceCents / 100).toFixed(2)); setPaymentOpen(true); }} onTransfer={() => { setTransferDestination(null); setTransferOpen(true); }} onClose={() => activeTab.id < 0 ? toast.info("A comanda offline será encerrada após sincronizar") : requireAuth(() => closeMutation.mutate({ tabId: activeTab.id }))} loading={addItemMutation.isPending || setItemMutation.isPending || payMutation.isPending || closeMutation.isPending || chargesMutation.isPending || transferMutation.isPending || customerNameMutation.isPending || syncOfflineMutation.isPending} />}
           {page === "products" && <ProductsPage products={products} onNewCategory={() => requireAuth(() => setCategoryOpen(true))} onNew={() => { setEditingProduct(null); setNewProduct({ name: "", code: "", categoryId: 1, unit: "un", cost: "", price: "", stock: "", minimum: "" }); setProductOpen(true); }} onEdit={(product: any) => { setEditingProduct(product); setNewProduct({ name: product.name, code: product.code, categoryId: product.categoryId ?? 1, unit: product.unit ?? "un", cost: String(product.costCents / 100), price: String(product.priceCents / 100), stock: String(product.stockQuantity), minimum: String(product.minimumStock) }); setProductOpen(true); }} onDelete={(id: number) => { if (window.confirm("Remover este produto? Esta ação não pode ser desfeita.")) deleteProductMutation.mutate({ productId: id }); }} />}
           {page === "stock" && <StockPage products={products} onAdjust={(product) => { setStockProduct(product); setStockQty("1"); setStockSheet(true); }} />}
           {page === "finance" && <FinancePage dashboard={dashboard} expenses={expensesQuery.data ?? [{ id: 1, description: "Reposição de bebidas", category: "Fornecedores", amountCents: 12450, method: "pix" as Method, occurredAt: new Date(), userName: "Rafael" }, { id: 2, description: "Conta de energia", category: "Energia", amountCents: 6800, method: "debit" as Method, occurredAt: new Date(Date.now() - 86400000), userName: "Rafael" }]} onNewExpense={() => requireAuth(() => setExpenseOpen(true))} />}
@@ -316,7 +386,7 @@ export default function Home() {
         <DialogContent className="payment-dialog">
           <DialogHeader><div className="dialog-icon"><Users size={20} /></div><DialogTitle>Nome da mesa</DialogTitle><DialogDescription>Associe a comanda ao nome da pessoa ou grupo atendido.</DialogDescription></DialogHeader>
           <label className="field-label">Nome<Input autoFocus maxLength={120} value={customerNameInput} onChange={(event) => setCustomerNameInput(event.target.value)} placeholder="Ex.: João, Ana e amigos" /></label>
-          <Button className="primary-wide" disabled={customerNameMutation.isPending || !activeTab} onClick={() => activeTab && customerNameMutation.mutate({ tabId: activeTab.id, customerName: customerNameInput.trim() || null })}>{customerNameMutation.isPending ? "Salvando..." : "Salvar nome"}</Button>
+          <Button className="primary-wide" disabled={customerNameMutation.isPending || !activeTab} onClick={() => { if (!activeTab) return; const customerName = customerNameInput.trim() || null; if (activeTab.id < 0) { updateOfflineTab(activeTab, (current) => ({ ...current, customerName })); setCustomerNameOpen(false); } else customerNameMutation.mutate({ tabId: activeTab.id, customerName }); }}>{customerNameMutation.isPending ? "Salvando..." : "Salvar nome"}</Button>
         </DialogContent>
       </Dialog>
 

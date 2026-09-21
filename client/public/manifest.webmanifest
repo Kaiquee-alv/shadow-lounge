@@ -1,0 +1,13 @@
+{
+  "name": "Shadow Lounge",
+  "short_name": "Shadow Lounge",
+  "description": "Gestão de mesas, comandas, estoque e financeiro.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#101117",
+  "theme_color": "#101117",
+  "icons": [
+    { "src": "/shadow-lounge-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/shadow-lounge-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

@@ -25,6 +25,7 @@ import {
   listStockMovements,
   listTables,
   openTab,
+  syncOfflineTab,
   registerPayment,
   saveProduct,
   setTabItemQuantity,
@@ -135,6 +136,18 @@ export const appRouter = router({
     openTab: protectedProcedure.input(z.object({ tableId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);
       return openTab(input.tableId, ctx.user.id);
+    }),
+    syncOfflineTab: protectedProcedure.input(z.object({
+      offlineKey: z.string().min(8).max(80),
+      deviceId: z.string().min(3).max(120),
+      tableId: z.number().int().positive(),
+      customerName: z.string().trim().max(120).nullable().optional(),
+      tipPercent: z.union([z.literal(0), z.literal(10)]),
+      items: z.array(z.object({ productId: z.number().int().positive(), productName: z.string().max(160), quantity: z.number().int().min(1).max(99), note: z.string().max(500).nullable().optional() })).max(100),
+      payments: z.array(z.object({ amountCents: z.number().int().positive(), method: paymentMethod, requestKey: z.string().min(8).max(80) })).max(20),
+    })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return syncOfflineTab(input, ctx.user.id);
     }),
     transferTab: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), destinationTableId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);

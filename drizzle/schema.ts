@@ -146,6 +146,7 @@ export const tabs = pgTable(
     id: serial("id").primaryKey(),
     tableId: integer("tableId").notNull().references(() => loungeTables.id),
     tabCode: varchar("tabCode", { length: 24 }).notNull(),
+    offlineKey: varchar("offlineKey", { length: 80 }),
     customerName: varchar("customerName", { length: 120 }),
     status: tabStatusEnum("status").default("open").notNull(),
     openedBy: integer("openedBy").notNull().references(() => users.id),
@@ -160,6 +161,7 @@ export const tabs = pgTable(
   },
   (table) => [
     uniqueIndex("tabs_code_unique").on(table.tabCode),
+    uniqueIndex("tabs_offline_key_unique").on(table.offlineKey),
     index("tabs_table_status_idx").on(table.tableId, table.status),
   ],
 );
