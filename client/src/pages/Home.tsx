@@ -341,7 +341,7 @@ export default function Home() {
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? "sidebar-mobile-open" : ""}`}>
         <div className="brand-block">
-          <img className="brand-logo" src="/shadow-lounge-logo.png" alt="Shadow Lounge" />
+          <img className="brand-logo" src="/shadow-lounge-app-icon.png" alt="Shadow Lounge" />
           <button className="icon-btn mobile-close" onClick={() => setMobileNav(false)} aria-label="Fechar menu"><X size={19} /></button>
         </div>
         <div className="shift-pill"><span className="pulse-dot" /> OPERAÇÃO AO VIVO</div>
