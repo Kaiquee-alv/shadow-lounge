@@ -364,3 +364,12 @@ h3 { font-size: 17px; font-weight: 700; }
   .toolbar-actions { width: 100%; }
   .toolbar-actions button { flex: 1; }
 }
+
+/* Ações da comanda: mantêm os botões acessíveis em desktop e mobile. */
+.tab-topline-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.tab-topline-actions > span { display: inline-flex; align-items: center; gap: 7px; }
+@media (max-width: 640px) {
+  .tab-topline { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
+  .tab-topline-actions { width: 100%; justify-content: flex-start; }
+  .tab-topline-actions button { flex: 1 1 auto; }
+}
