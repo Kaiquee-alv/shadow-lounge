@@ -36,11 +36,14 @@ body { margin: 0; min-width: 320px; background: #f8f8f6; color: #22252b; font-fa
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
+.launch-loader { animation: launch-spin .8s linear infinite; color: var(--gold-strong, #bd7d18); }
+@keyframes launch-spin { to { transform: rotate(360deg); } }
 ::selection { background: #e5a83d; color: #17140f; }
 
 .app-shell { min-height: 100vh; display: flex; background: #f8f8f6; }
 .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; width: 254px; padding: 25px 14px 16px; display: flex; flex-direction: column; background: #fff; border-right: 1px solid #eee9df; box-shadow: 8px 0 28px rgba(35,30,20,.035); }
-.brand-block { display: flex; align-items: center; gap: 10px; padding: 0 10px; color: #f4eadc; letter-spacing: .13em; font-family: "Outfit", sans-serif; }
+.brand-block { display: flex; align-items: flex-start; gap: 10px; padding: 0 5px; color: #f4eadc; letter-spacing: .13em; font-family: "Outfit", sans-serif; }
+.brand-logo { display: block; width: 190px; height: 136px; object-fit: cover; object-position: center; border-radius: 12px; background: #050505; box-shadow: 0 8px 24px rgba(0,0,0,.22); }
 .brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; color: #16120b; background: linear-gradient(145deg, #f5c65e, #cf8130); box-shadow: 0 6px 22px rgba(232,159,47,.22); }
 .brand-block strong { display: block; font-size: 16px; line-height: 15px; font-weight: 800; }
 .brand-block span { display: block; padding-left: 1px; color: #c7a475; font-size: 9px; font-weight: 700; }
