@@ -29,6 +29,7 @@ import {
   saveProduct,
   setTabItemQuantity,
   setTabCharges,
+  transferTab,
   createProductCategory,
   deleteProduct,
   updateUserAccess,
@@ -128,6 +129,10 @@ export const appRouter = router({
     openTab: protectedProcedure.input(z.object({ tableId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);
       return openTab(input.tableId, ctx.user.id);
+    }),
+    transferTab: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), destinationTableId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return transferTab(input.tabId, input.destinationTableId, ctx.user.id);
     }),
     addItem: protectedProcedure.input(z.object({
       tabId: z.number().int().positive(), productId: z.number().int().positive(), quantity: z.number().int().min(1).max(99), note: z.string().max(500).optional(),

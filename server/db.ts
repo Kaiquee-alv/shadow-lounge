@@ -400,6 +400,34 @@ export async function openTab(tableId: number, userId: number) {
   });
 }
 
+export async function transferTab(tabId: number, destinationTableId: number, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
+    const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
+    if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
+    if (tab[0].tableId === destinationTableId) throw new Error("Escolha uma mesa diferente da atual");
+
+    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${destinationTableId} FOR UPDATE`);
+    const destination = await tx.select().from(loungeTables).where(eq(loungeTables.id, destinationTableId)).limit(1);
+    if (!destination[0]) throw new Error("Mesa de destino não encontrada");
+    if (destination[0].status !== "free" || destination[0].activeTabId) throw new Error("A mesa de destino já está ocupada");
+
+    await tx.update(tabs).set({ tableId: destinationTableId, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.update(loungeTables).set({ status: "free", activeTabId: null, updatedAt: new Date() }).where(eq(loungeTables.id, tab[0].tableId));
+    await tx.update(loungeTables).set({ status: "occupied", activeTabId: tabId, updatedAt: new Date() }).where(eq(loungeTables.id, destinationTableId));
+    await tx.insert(auditLogs).values({
+      userId,
+      action: "TRANSFER_TAB",
+      entityType: "tab",
+      entityId: tabId,
+      description: `Transferiu a comanda ${tab[0].tabCode} para a mesa ${destination[0].number}`,
+    });
+    return { tabId, tableId: destinationTableId, tableNumber: destination[0].number };
+  });
+}
+
 export async function addTabItem(input: { tabId: number; productId: number; quantity: number; note?: string }, userId: number, localRole: "administrator" | "manager" | "attendant") {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
