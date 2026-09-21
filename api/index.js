@@ -347,6 +347,7 @@ var tabs = pgTable(
     id: serial("id").primaryKey(),
     tableId: integer("tableId").notNull().references(() => loungeTables.id),
     tabCode: varchar("tabCode", { length: 24 }).notNull(),
+    customerName: varchar("customerName", { length: 120 }),
     status: tabStatusEnum("status").default("open").notNull(),
     openedBy: integer("openedBy").notNull().references(() => users.id),
     openedAt: timestamp("openedAt").defaultNow().notNull(),
@@ -736,6 +737,7 @@ async function listTables() {
       status: computedStatus,
       tabId: tab?.id ?? null,
       tabCode: tab?.tabCode ?? null,
+      customerName: tab?.customerName ?? null,
       openedAt: tab?.openedAt ?? null,
       totalCents: total,
       paidCents: paid,
@@ -749,6 +751,7 @@ async function getTabDetails(tabId) {
   const tab = await db.select({
     id: tabs.id,
     tabCode: tabs.tabCode,
+    customerName: tabs.customerName,
     status: tabs.status,
     openedAt: tabs.openedAt,
     closedAt: tabs.closedAt,
@@ -787,6 +790,25 @@ async function getTabDetails(tabId) {
   const totalCents = totals.totalCents;
   const paidCents = paymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
   return { ...tab[0], items, payments: paymentRows, ...totals, paidCents, balanceCents: Math.max(totalCents - paidCents, 0) };
+}
+async function setTabCustomerName(tabId, customerName, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  const normalizedName = customerName?.trim() || null;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
+    const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
+    if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
+    await tx.update(tabs).set({ customerName: normalizedName, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.insert(auditLogs).values({
+      userId,
+      action: "UPDATE_TAB_CUSTOMER",
+      entityType: "tab",
+      entityId: tabId,
+      description: normalizedName ? `Atribuiu a comanda ${tab[0].tabCode} a ${normalizedName}` : `Removeu o nome da comanda ${tab[0].tabCode}`
+    });
+    return { tabId, customerName: normalizedName };
+  });
 }
 async function openTab(tableId, userId) {
   const db = await getDb();
@@ -1335,6 +1357,10 @@ var appRouter = router({
     tab: protectedProcedure.input(z2.object({ tabId: z2.number().int().positive() })).query(async ({ ctx, input }) => {
       await operator(ctx);
       return getTabDetails(input.tabId);
+    }),
+    setCustomerName: protectedProcedure.input(z2.object({ tabId: z2.number().int().positive(), customerName: z2.string().trim().max(120).nullable() })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return setTabCustomerName(input.tabId, input.customerName, ctx.user.id);
     }),
     openTab: protectedProcedure.input(z2.object({ tableId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);

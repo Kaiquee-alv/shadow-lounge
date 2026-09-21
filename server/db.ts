@@ -328,6 +328,7 @@ export async function listTables() {
       status: computedStatus,
       tabId: tab?.id ?? null,
       tabCode: tab?.tabCode ?? null,
+      customerName: tab?.customerName ?? null,
       openedAt: tab?.openedAt ?? null,
       totalCents: total,
       paidCents: paid,
@@ -342,6 +343,7 @@ export async function getTabDetails(tabId: number) {
   const tab = await db.select({
     id: tabs.id,
     tabCode: tabs.tabCode,
+    customerName: tabs.customerName,
     status: tabs.status,
     openedAt: tabs.openedAt,
     closedAt: tabs.closedAt,
@@ -381,6 +383,26 @@ export async function getTabDetails(tabId: number) {
   const totalCents = totals.totalCents;
   const paidCents = paymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
   return { ...tab[0], items, payments: paymentRows, ...totals, paidCents, balanceCents: Math.max(totalCents - paidCents, 0) };
+}
+
+export async function setTabCustomerName(tabId: number, customerName: string | null, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const normalizedName = customerName?.trim() || null;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
+    const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
+    if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
+    await tx.update(tabs).set({ customerName: normalizedName, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.insert(auditLogs).values({
+      userId,
+      action: "UPDATE_TAB_CUSTOMER",
+      entityType: "tab",
+      entityId: tabId,
+      description: normalizedName ? `Atribuiu a comanda ${tab[0].tabCode} a ${normalizedName}` : `Removeu o nome da comanda ${tab[0].tabCode}`,
+    });
+    return { tabId, customerName: normalizedName };
+  });
 }
 
 export async function openTab(tableId: number, userId: number) {

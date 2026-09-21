@@ -29,6 +29,7 @@ import {
   saveProduct,
   setTabItemQuantity,
   setTabCharges,
+  setTabCustomerName,
   transferTab,
   createProductCategory,
   deleteProduct,
@@ -125,6 +126,10 @@ export const appRouter = router({
     tab: protectedProcedure.input(z.object({ tabId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       await operator(ctx);
       return getTabDetails(input.tabId);
+    }),
+    setCustomerName: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), customerName: z.string().trim().max(120).nullable() })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return setTabCustomerName(input.tabId, input.customerName, ctx.user.id);
     }),
     openTab: protectedProcedure.input(z.object({ tableId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);

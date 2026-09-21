@@ -146,6 +146,7 @@ export const tabs = pgTable(
     id: serial("id").primaryKey(),
     tableId: integer("tableId").notNull().references(() => loungeTables.id),
     tabCode: varchar("tabCode", { length: 24 }).notNull(),
+    customerName: varchar("customerName", { length: 120 }),
     status: tabStatusEnum("status").default("open").notNull(),
     openedBy: integer("openedBy").notNull().references(() => users.id),
     openedAt: timestamp("openedAt").defaultNow().notNull(),
