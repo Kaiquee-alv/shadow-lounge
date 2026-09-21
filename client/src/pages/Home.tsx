@@ -128,16 +128,30 @@ export default function Home() {
   };
   const openTabMutation = trpc.lounge.openTab.useMutation({ onSuccess: (tab) => { refreshOperationalData(); setSelectedTabId(tab.id); toast.success("Comanda aberta com sucesso"); }, onError: (error) => toast.error(error.message) });
   const addItemMutation = trpc.lounge.addItem.useMutation({
-    onSuccess: () => {
-      // O lançamento já foi persistido; atualize somente o que muda nesta tela.
-      // Dashboard e mesas podem ser atualizados no próximo refresh/navegação.
-      void utils.lounge.tab.invalidate();
-      void utils.inventory.products.invalidate();
-      setNoteOpen(false);
-      setPendingProduct(null);
-      setItemNote("");
+    onMutate: async (variables) => {
+      if (!selectedTabId || selectedTabId < 0) return { previousTab: undefined };
+      await utils.lounge.tab.cancel({ tabId: selectedTabId });
+      const previousTab = utils.lounge.tab.getData({ tabId: selectedTabId });
+      const product = products.find((item: any) => item.id === variables.productId);
+      if (previousTab && product) {
+        const existing = previousTab.items.find((item: any) => item.productId === variables.productId);
+        const items = existing
+          ? previousTab.items.map((item: any) => item.productId === variables.productId ? { ...item, quantity: item.quantity + variables.quantity, note: variables.note ?? item.note } : item)
+          : [...previousTab.items, { id: -Date.now(), productId: product.id, productName: product.name, quantity: variables.quantity, unitPriceCents: product.priceCents, unitCostCents: product.costCents, note: variables.note ?? null, createdAt: new Date() }];
+        const subtotalCents = items.reduce((sum: number, item: any) => sum + item.quantity * item.unitPriceCents, 0);
+        const tipCents = Math.round(subtotalCents * ((previousTab as any).tipPercent ?? 0) / 100);
+        const paidCents = previousTab.paidCents ?? 0;
+        utils.lounge.tab.setData({ tabId: selectedTabId }, { ...previousTab, items, subtotalCents, tipCents, totalCents: subtotalCents + tipCents, balanceCents: Math.max(subtotalCents + tipCents - paidCents, 0) } as any);
+      }
+      setNoteOpen(false); setPendingProduct(null); setItemNote("");
+      return { previousTab };
     },
-    onError: (error) => toast.error(error.message),
+    onSuccess: () => {
+      void utils.lounge.tab.invalidate(undefined, { refetchType: "active" });
+      void utils.inventory.products.invalidate(undefined, { refetchType: "active" });
+      setNoteOpen(false); setPendingProduct(null); setItemNote("");
+    },
+    onError: (error, _variables, context) => { if (selectedTabId && selectedTabId > 0 && context?.previousTab) utils.lounge.tab.setData({ tabId: selectedTabId }, context.previousTab); toast.error(error.message); },
   });
   const setItemMutation = trpc.lounge.setItemQuantity.useMutation({ onSuccess: refreshOperationalData, onError: (error) => toast.error(error.message) });
   const payMutation = trpc.lounge.pay.useMutation({ onSuccess: () => { refreshOperationalData(); setPaymentOpen(false); setPaymentValue(""); toast.success("Pagamento registrado. A mesa permanece aberta."); }, onError: (error) => toast.error(error.message) });
@@ -232,9 +246,15 @@ export default function Home() {
 
   const addProduct = (product: any) => requireAuth(() => {
     if (!selectedTabId) { toast.message("Selecione uma comanda aberta primeiro."); return; }
-    setPendingProduct(product);
-    setItemNote("");
-    setNoteOpen(true);
+    if (selectedTabId < 0) {
+      updateOfflineTab({ id: selectedTabId }, (current) => {
+        const existing = current.items.find((item: any) => item.productId === product.id);
+        const items = existing ? current.items.map((item: any) => item.productId === product.id ? { ...item, quantity: item.quantity + 1 } : item) : [...current.items, { id: `${current.offlineKey}-${product.id}`, productId: product.id, productName: product.name, quantity: 1, unitPriceCents: product.priceCents, unitCostCents: product.costCents, note: null, createdAt: new Date().toISOString() }];
+        return { ...current, items };
+      });
+      return;
+    }
+    addItemMutation.mutate({ tabId: selectedTabId, productId: product.id, quantity: 1 });
   });
 
   const confirmAddProduct = () => requireAuth(() => {
@@ -326,7 +346,7 @@ export default function Home() {
           {page === "dashboard" && <Dashboard dashboard={dashboard} occupiedCount={occupiedCount} onNavigate={setPage} />}
           {page === "tables" && !activeTab && !selectedTabId && <TablesGrid tables={tables} onSelect={selectTable} isOpening={openTabMutation.isPending} />}
           {page === "tables" && selectedTabId && !activeTab && <div className="loading-screen inline-loading"><div className="loading-mark"><ReceiptText size={24} /></div><span>Carregando comanda...</span></div>}
-          {page === "tables" && activeTab && <TabDetail tab={activeTab} products={filteredProducts} search={productSearch} setSearch={setProductSearch} tipEnabled={tipEnabled} setTipEnabled={toggleTip} onApplyCharges={() => activeTab && chargesMutation.mutate({ tabId: activeTab.id, tipPercent: tipEnabled ? 10 : 0 })} onBack={() => setSelectedTabId(null)} onName={() => { setCustomerNameInput(activeTab.customerName ?? ""); setCustomerNameOpen(true); }} onPrint={printTab} onAdd={(product: any) => addProduct(product)} onQuantity={changeItemQuantity} onPayment={() => { setPaymentValue((activeTab.balanceCents / 100).toFixed(2)); setPaymentOpen(true); }} onTransfer={() => { setTransferDestination(null); setTransferOpen(true); }} onClose={() => activeTab.id < 0 ? toast.info("A comanda offline será encerrada após sincronizar") : requireAuth(() => closeMutation.mutate({ tabId: activeTab.id }))} loading={addItemMutation.isPending || setItemMutation.isPending || payMutation.isPending || closeMutation.isPending || chargesMutation.isPending || transferMutation.isPending || customerNameMutation.isPending || syncOfflineMutation.isPending} />}
+          {page === "tables" && activeTab && <TabDetail tab={activeTab} products={filteredProducts} search={productSearch} setSearch={setProductSearch} tipEnabled={tipEnabled} setTipEnabled={toggleTip} onApplyCharges={() => activeTab && chargesMutation.mutate({ tabId: activeTab.id, tipPercent: tipEnabled ? 10 : 0 })} onBack={() => setSelectedTabId(null)} onName={() => { setCustomerNameInput(activeTab.customerName ?? ""); setCustomerNameOpen(true); }} onPrint={printTab} onAdd={(product: any) => addProduct(product)} onQuantity={changeItemQuantity} onPayment={() => { setPaymentValue((activeTab.balanceCents / 100).toFixed(2)); setPaymentOpen(true); }} onTransfer={() => { setTransferDestination(null); setTransferOpen(true); }} onClose={() => activeTab.id < 0 ? toast.info("A comanda offline será encerrada após sincronizar") : requireAuth(() => closeMutation.mutate({ tabId: activeTab.id }))} loading={setItemMutation.isPending || payMutation.isPending || closeMutation.isPending || chargesMutation.isPending || transferMutation.isPending || customerNameMutation.isPending || syncOfflineMutation.isPending} />}
           {page === "products" && <ProductsPage products={products} onNewCategory={() => requireAuth(() => setCategoryOpen(true))} onNew={() => { setEditingProduct(null); setNewProduct({ name: "", code: "", categoryId: 1, unit: "un", cost: "", price: "", stock: "", minimum: "" }); setProductOpen(true); }} onEdit={(product: any) => { setEditingProduct(product); setNewProduct({ name: product.name, code: product.code, categoryId: product.categoryId ?? 1, unit: product.unit ?? "un", cost: String(product.costCents / 100), price: String(product.priceCents / 100), stock: String(product.stockQuantity), minimum: String(product.minimumStock) }); setProductOpen(true); }} onDelete={(id: number) => { if (window.confirm("Remover este produto? Esta ação não pode ser desfeita.")) deleteProductMutation.mutate({ productId: id }); }} />}
           {page === "stock" && <StockPage products={products} onAdjust={(product) => { setStockProduct(product); setStockQty("1"); setStockSheet(true); }} />}
           {page === "finance" && <FinancePage dashboard={dashboard} expenses={expensesQuery.data ?? [{ id: 1, description: "Reposição de bebidas", category: "Fornecedores", amountCents: 12450, method: "pix" as Method, occurredAt: new Date(), userName: "Rafael" }, { id: 2, description: "Conta de energia", category: "Energia", amountCents: 6800, method: "debit" as Method, occurredAt: new Date(Date.now() - 86400000), userName: "Rafael" }]} onNewExpense={() => requireAuth(() => setExpenseOpen(true))} />}
