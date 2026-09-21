@@ -804,6 +804,31 @@ async function openTab(tableId, userId) {
     return { id: tabId, tabCode };
   });
 }
+async function transferTab(tabId, destinationTableId, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
+    const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
+    if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
+    if (tab[0].tableId === destinationTableId) throw new Error("Escolha uma mesa diferente da atual");
+    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${destinationTableId} FOR UPDATE`);
+    const destination = await tx.select().from(loungeTables).where(eq(loungeTables.id, destinationTableId)).limit(1);
+    if (!destination[0]) throw new Error("Mesa de destino n\xE3o encontrada");
+    if (destination[0].status !== "free" || destination[0].activeTabId) throw new Error("A mesa de destino j\xE1 est\xE1 ocupada");
+    await tx.update(tabs).set({ tableId: destinationTableId, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.update(loungeTables).set({ status: "free", activeTabId: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq(loungeTables.id, tab[0].tableId));
+    await tx.update(loungeTables).set({ status: "occupied", activeTabId: tabId, updatedAt: /* @__PURE__ */ new Date() }).where(eq(loungeTables.id, destinationTableId));
+    await tx.insert(auditLogs).values({
+      userId,
+      action: "TRANSFER_TAB",
+      entityType: "tab",
+      entityId: tabId,
+      description: `Transferiu a comanda ${tab[0].tabCode} para a mesa ${destination[0].number}`
+    });
+    return { tabId, tableId: destinationTableId, tableNumber: destination[0].number };
+  });
+}
 async function addTabItem(input, userId, localRole2) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
@@ -820,10 +845,18 @@ async function addTabItem(input, userId, localRole2) {
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
     const scheduledRules = await tx.select().from(productPriceRules).where(and(eq(productPriceRules.productId, input.productId), eq(productPriceRules.active, true)));
     const scheduledRule = scheduledRules.find((rule) => timeInWindow(currentMinutes, rule.startTime, rule.endTime));
-    const discountPercent = 0;
     const scheduledPriceCents = scheduledRule?.priceCents ?? product[0].priceCents;
-    const unitPriceCents = scheduledPriceCents;
-    const discountReason = scheduledRule ? scheduledRule.name : null;
+    const happyHourActive = Boolean(
+      systemSettings[0]?.happyHourEnabled && timeInWindow(
+        currentMinutes,
+        systemSettings[0]?.happyHourStart ?? "17:00",
+        systemSettings[0]?.happyHourEnd ?? "19:00"
+      )
+    );
+    const configuredDiscount = Number(systemSettings[0]?.happyHourDiscountPercent ?? 0);
+    const discountPercent = happyHourActive ? Math.min(100, Math.max(0, configuredDiscount)) : 0;
+    const unitPriceCents = Math.round(scheduledPriceCents * (100 - discountPercent) / 100);
+    const discountReason = happyHourActive ? `Happy Hour${scheduledRule ? ` + ${scheduledRule.name}` : ""}` : scheduledRule?.name ?? null;
     await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${input.quantity}` }).where(eq(products.id, input.productId));
     const existing = await tx.select().from(tabItems).where(and(eq(tabItems.tabId, input.tabId), eq(tabItems.productId, input.productId))).limit(1);
     if (existing[0]) {
@@ -987,6 +1020,17 @@ async function saveProduct(input, userId) {
   const id = Number(inserted[0].id);
   await writeAudit(userId, "CREATE_PRODUCT", "product", id, `Cadastrou ${input.name}`);
   return { id };
+}
+async function deleteProduct(productId, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  const product = await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.id, productId)).limit(1);
+  if (!product[0]) throw new Error("Produto n\xE3o encontrado");
+  const usedInTabs = await db.select({ id: tabItems.id }).from(tabItems).where(eq(tabItems.productId, productId)).limit(1);
+  if (usedInTabs[0]) throw new Error("Este produto j\xE1 foi lan\xE7ado em uma comanda e n\xE3o pode ser removido. Desative-o no cadastro.");
+  await db.delete(products).where(eq(products.id, productId));
+  await writeAudit(userId, "DELETE_PRODUCT", "product", productId, `Removeu ${product[0].name}`);
+  return { success: true };
 }
 async function adjustStock(input, userId) {
   const db = await getDb();
@@ -1168,6 +1212,45 @@ async function deleteProductPriceRule(ruleId, userId) {
   await writeAudit(userId, "DELETE_PRICE_RULE", "product_price_rule", ruleId, "Excluiu regra de pre\xE7o");
   return { success: true };
 }
+async function getCommercialSettings() {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  await ensureInitialData();
+  const rows = await db.select().from(settings).limit(1);
+  return rows[0] ?? {
+    id: 1,
+    preventNegativeStock: true,
+    allowManualDiscount: true,
+    defaultDiscountPercent: 10,
+    happyHourEnabled: false,
+    happyHourStart: "17:00",
+    happyHourEnd: "19:00",
+    happyHourDiscountPercent: 10,
+    updatedAt: /* @__PURE__ */ new Date()
+  };
+}
+async function updateCommercialSettings(input, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  await db.insert(settings).values({
+    id: 1,
+    happyHourEnabled: input.happyHourEnabled,
+    happyHourStart: input.happyHourStart,
+    happyHourEnd: input.happyHourEnd,
+    happyHourDiscountPercent: input.happyHourDiscountPercent
+  }).onConflictDoUpdate({
+    target: settings.id,
+    set: {
+      happyHourEnabled: input.happyHourEnabled,
+      happyHourStart: input.happyHourStart,
+      happyHourEnd: input.happyHourEnd,
+      happyHourDiscountPercent: input.happyHourDiscountPercent,
+      updatedAt: /* @__PURE__ */ new Date()
+    }
+  });
+  await writeAudit(userId, "UPDATE_SETTINGS", "settings", 1, "Atualizou as configura\xE7\xF5es de Happy Hour");
+  return getCommercialSettings();
+}
 
 // server/routers.ts
 var paymentMethod = z2.enum(["pix", "cash", "debit", "credit", "other"]);
@@ -1222,7 +1305,14 @@ var appRouter = router({
       return { success: true, expiresAt: session.expiresAt };
     }),
     logout: publicProcedure.mutation(({ ctx }) => {
-      ctx.res.clearCookie("shadow_session", { path: "/" });
+      ctx.res.cookie("shadow_session", "", {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        expires: /* @__PURE__ */ new Date(0),
+        maxAge: 0,
+        path: "/"
+      });
       return { success: true };
     })
   }),
@@ -1249,6 +1339,10 @@ var appRouter = router({
     openTab: protectedProcedure.input(z2.object({ tableId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);
       return openTab(input.tableId, ctx.user.id);
+    }),
+    transferTab: protectedProcedure.input(z2.object({ tabId: z2.number().int().positive(), destinationTableId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return transferTab(input.tabId, input.destinationTableId, ctx.user.id);
     }),
     addItem: protectedProcedure.input(z2.object({
       tabId: z2.number().int().positive(),
@@ -1318,6 +1412,10 @@ var appRouter = router({
       await requireRole(ctx, ["administrator", "manager"]);
       return saveProduct(input, ctx.user.id);
     }),
+    deleteProduct: protectedProcedure.input(z2.object({ productId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return deleteProduct(input.productId, ctx.user.id);
+    }),
     adjust: protectedProcedure.input(z2.object({
       productId: z2.number().int().positive(),
       quantity: z2.number().int().min(1).max(1e5),
@@ -1351,7 +1449,6 @@ var appRouter = router({
       return listAudit();
     })
   }),
-  commercial: router({}),
   access: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       await requireRole(ctx, ["administrator"]);
@@ -1384,6 +1481,21 @@ var appRouter = router({
     deleteRule: protectedProcedure.input(z2.object({ ruleId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return deleteProductPriceRule(input.ruleId, ctx.user.id);
+    })
+  }),
+  commercial: router({
+    settings: protectedProcedure.query(async ({ ctx }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return getCommercialSettings();
+    }),
+    updateSettings: protectedProcedure.input(z2.object({
+      happyHourEnabled: z2.boolean(),
+      happyHourStart: z2.string().regex(/^\d{2}:\d{2}$/),
+      happyHourEnd: z2.string().regex(/^\d{2}:\d{2}$/),
+      happyHourDiscountPercent: z2.number().int().min(0).max(100)
+    })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return updateCommercialSettings(input, ctx.user.id);
     })
   })
 });
