@@ -12,7 +12,7 @@ import {
   AlertTriangle, ArrowDownRight, ArrowUpRight, ArrowRightLeft, BarChart3, Banknote, Beer, ChevronLeft, LoaderCircle, Printer,
   ClipboardList, Clock3, CreditCard, FileText, Flame, LayoutDashboard, LogIn, Menu,
   Package, Plus, ReceiptText, Search, Settings, ShieldCheck, Sparkles, Table2, Pencil, Trash2,
-  TrendingUp, Users, WalletCards, X, Zap,
+  TrendingUp, Users, WalletCards, Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -341,8 +341,7 @@ export default function Home() {
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? "sidebar-mobile-open" : ""}`}>
         <div className="brand-block">
-          <img className="brand-logo" src="/shadow-lounge-app-icon.png" alt="Shadow Lounge" />
-          <button className="icon-btn mobile-close" onClick={() => setMobileNav(false)} aria-label="Fechar menu"><X size={19} /></button>
+          <img className="brand-logo" src="/shadow-lounge-icon-white.png" alt="Shadow Lounge" />
         </div>
         <div className="shift-pill"><span className="pulse-dot" /> OPERAÇÃO AO VIVO</div>
         <nav>{nav.map(navItem)}</nav>
