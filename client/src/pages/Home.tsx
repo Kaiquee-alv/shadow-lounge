@@ -84,6 +84,7 @@ export default function Home() {
   const [noteOpen, setNoteOpen] = useState(false);
   const [pendingProduct, setPendingProduct] = useState<any>(null);
   const [itemNote, setItemNote] = useState("");
+  const [launchQuantity, setLaunchQuantity] = useState("1");
   const [productSearch, setProductSearch] = useState("");
   const [tipEnabled, setTipEnabled] = useState(false);
   const [historyFrom, setHistoryFrom] = useState("");
@@ -152,9 +153,9 @@ export default function Home() {
       void utils.lounge.tab.invalidate(undefined, { refetchType: "active" });
       void utils.inventory.products.invalidate(undefined, { refetchType: "active" });
       setLaunchingProductId(null);
-      setNoteOpen(false); setPendingProduct(null); setItemNote("");
+      setNoteOpen(false); setPendingProduct(null); setItemNote(""); setLaunchQuantity("1");
     },
-    onError: (error, _variables, context) => { setLaunchingProductId(null); if (selectedTabId && selectedTabId > 0 && context?.previousTab) utils.lounge.tab.setData({ tabId: selectedTabId }, context.previousTab); toast.error(error.message); },
+    onError: (error, _variables, context) => { setLaunchingProductId(null); setLaunchQuantity("1"); if (selectedTabId && selectedTabId > 0 && context?.previousTab) utils.lounge.tab.setData({ tabId: selectedTabId }, context.previousTab); toast.error(error.message); },
   });
   const setItemMutation = trpc.lounge.setItemQuantity.useMutation({
     onMutate: async (variables) => {
@@ -264,30 +265,27 @@ export default function Home() {
 
   const addProduct = (product: any) => requireAuth(() => {
     if (!selectedTabId) { toast.message("Selecione uma comanda aberta primeiro."); return; }
-    if (selectedTabId < 0) {
-      updateOfflineTab({ id: selectedTabId }, (current) => {
-        const existing = current.items.find((item: any) => item.productId === product.id);
-        const items = existing ? current.items.map((item: any) => item.productId === product.id ? { ...item, quantity: item.quantity + 1 } : item) : [...current.items, { id: `${current.offlineKey}-${product.id}`, productId: product.id, productName: product.name, quantity: 1, unitPriceCents: product.priceCents, unitCostCents: product.costCents, note: null, createdAt: new Date().toISOString() }];
-        return { ...current, items };
-      });
-      return;
-    }
-    setLaunchingProductId(product.id);
-    addItemMutation.mutate({ tabId: selectedTabId, productId: product.id, quantity: 1 });
+    setPendingProduct(product);
+    setItemNote("");
+    setLaunchQuantity("1");
+    setNoteOpen(true);
   });
 
   const confirmAddProduct = () => requireAuth(() => {
     if (!selectedTabId || !pendingProduct) return;
+    const quantity = Math.max(1, Math.floor(Number(launchQuantity)));
+    if (!Number.isFinite(quantity) || quantity > 999) { toast.error("Informe uma quantidade entre 1 e 999"); return; }
     if (selectedTabId < 0) {
       updateOfflineTab({ id: selectedTabId }, (current) => {
         const existing = current.items.find((item: any) => item.productId === pendingProduct.id);
-        const items = existing ? current.items.map((item: any) => item.productId === pendingProduct.id ? { ...item, quantity: item.quantity + 1, note: itemNote.trim() || item.note } : item) : [...current.items, { id: `${current.offlineKey}-${pendingProduct.id}`, productId: pendingProduct.id, productName: pendingProduct.name, quantity: 1, unitPriceCents: pendingProduct.priceCents, unitCostCents: pendingProduct.costCents, note: itemNote.trim() || null, createdAt: new Date().toISOString() }];
+        const items = existing ? current.items.map((item: any) => item.productId === pendingProduct.id ? { ...item, quantity: item.quantity + quantity, note: itemNote.trim() || item.note } : item) : [...current.items, { id: `${current.offlineKey}-${pendingProduct.id}`, productId: pendingProduct.id, productName: pendingProduct.name, quantity, unitPriceCents: pendingProduct.priceCents, unitCostCents: pendingProduct.costCents, note: itemNote.trim() || null, createdAt: new Date().toISOString() }];
         return { ...current, items };
       });
-      setNoteOpen(false); setPendingProduct(null); setItemNote("");
+      setNoteOpen(false); setPendingProduct(null); setItemNote(""); setLaunchQuantity("1");
       return;
     }
-    addItemMutation.mutate({ tabId: selectedTabId, productId: pendingProduct.id, quantity: 1, note: itemNote.trim() || undefined });
+    setLaunchingProductId(pendingProduct.id);
+    addItemMutation.mutate({ tabId: selectedTabId, productId: pendingProduct.id, quantity, note: itemNote.trim() || undefined });
   });
 
   const changeItemQuantity = (itemId: number, quantity: number) => {
@@ -428,10 +426,11 @@ export default function Home() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={noteOpen} onOpenChange={(open) => { setNoteOpen(open); if (!open) { setPendingProduct(null); setItemNote(""); } }}>
+      <Dialog open={noteOpen} onOpenChange={(open) => { setNoteOpen(open); if (!open) { setPendingProduct(null); setItemNote(""); setLaunchQuantity("1"); } }}>
         <DialogContent className="payment-dialog">
           <DialogHeader><div className="dialog-icon"><FileText size={20} /></div><DialogTitle>Observação do lançamento</DialogTitle><DialogDescription>{pendingProduct ? `Inclua uma observação para ${pendingProduct.name}.` : "Inclua uma observação para o produto."}</DialogDescription></DialogHeader>
-          <label className="field-label">Observação (opcional)<Textarea autoFocus maxLength={500} value={itemNote} onChange={(event) => setItemNote(event.target.value)} placeholder="Ex.: sem gelo, sabor menta, entregar depois..." /></label>
+          <label className="field-label">Quantidade<Input autoFocus type="number" inputMode="numeric" min="1" max="999" value={launchQuantity} onChange={(event) => setLaunchQuantity(event.target.value)} /></label>
+          <label className="field-label">Observação (opcional)<Textarea maxLength={500} value={itemNote} onChange={(event) => setItemNote(event.target.value)} placeholder="Ex.: sem gelo, sabor menta, entregar depois..." /></label>
           <Button className="primary-wide" disabled={addItemMutation.isPending || !pendingProduct} onClick={confirmAddProduct}>{addItemMutation.isPending ? "Lançando..." : "Lançar produto"}</Button>
         </DialogContent>
       </Dialog>
