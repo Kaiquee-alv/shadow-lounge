@@ -35,13 +35,6 @@ const demoTables = Array.from({ length: 20 }, (_, index) => {
 
 const demoProducts = [
   { id: 1, name: "Heineken Long Neck", code: "HEI-330", categoryName: "Cervejas", priceCents: 1500, costCents: 850, stockQuantity: 48, minimumStock: 12, active: true },
-  { id: 2, name: "Budweiser Long Neck", code: "BUD-330", categoryName: "Cervejas", priceCents: 1200, costCents: 650, stockQuantity: 36, minimumStock: 10, active: true },
-  { id: 3, name: "Red Bull", code: "RED-250", categoryName: "Energéticos", priceCents: 1800, costCents: 900, stockQuantity: 17, minimumStock: 12, active: true },
-  { id: 4, name: "Coca-Cola Lata", code: "COCA-350", categoryName: "Refrigerantes", priceCents: 700, costCents: 380, stockQuantity: 62, minimumStock: 15, active: true },
-  { id: 5, name: "Narguilé Premium", code: "NARG-PRM", categoryName: "Narguilé", priceCents: 4500, costCents: 1100, stockQuantity: 20, minimumStock: 4, active: true },
-  { id: 6, name: "Essência Mint Ice", code: "ESS-MINT", categoryName: "Essências", priceCents: 2200, costCents: 900, stockQuantity: 8, minimumStock: 10, active: true },
-  { id: 7, name: "Carvão Cúbico", code: "CARV-1", categoryName: "Carvões", priceCents: 1200, costCents: 450, stockQuantity: 28, minimumStock: 8, active: true },
-  { id: 8, name: "Porção da Casa", code: "PET-001", categoryName: "Petiscos", priceCents: 3900, costCents: 1500, stockQuantity: 14, minimumStock: 5, active: true },
 ];
 
 const demoDashboard = {
