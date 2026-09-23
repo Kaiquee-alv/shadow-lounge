@@ -376,3 +376,32 @@ h3 { font-size: 17px; font-weight: 700; }
   .tab-topline-actions { width: 100%; justify-content: flex-start; }
   .tab-topline-actions button { flex: 1 1 auto; }
 }
+
+/* Tela de acesso Shadow Lounge */
+.login-screen { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(420px, .95fr); background: #f6f8fb; }
+.login-visual { position: relative; min-height: 100vh; padding: clamp(34px, 7vw, 100px); display: flex; flex-direction: column; justify-content: center; align-items: center; overflow: hidden; color: #fff; background: radial-gradient(circle at 50% 42%, rgba(224,171,68,.22), transparent 32%), linear-gradient(145deg, #161821 0%, #0c0d12 72%); }
+.login-visual:before, .login-visual:after { content: ""; position: absolute; border: 1px solid rgba(234,181,74,.18); border-radius: 50%; }
+.login-visual:before { width: 66vw; height: 66vw; max-width: 760px; max-height: 760px; }
+.login-visual:after { width: 42vw; height: 42vw; max-width: 480px; max-height: 480px; }
+.login-visual-glow { position: absolute; width: 280px; height: 280px; border-radius: 50%; background: #e9ad3d; opacity: .10; filter: blur(75px); }
+.login-visual img { position: relative; z-index: 1; width: min(58%, 360px); max-height: 390px; object-fit: contain; filter: drop-shadow(0 22px 30px rgba(0,0,0,.42)); }
+.login-visual > span { position: relative; z-index: 1; max-width: 330px; margin-top: 28px; color: #d8d2c8; text-align: center; font-size: 14px; line-height: 1.7; }
+.login-card-shell { display: grid; place-items: center; padding: 44px clamp(22px, 6vw, 92px); background: #fff; }
+.login-card-content { width: min(100%, 430px); }
+.login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 72px; color: var(--ink); }
+.login-brand img { width: 46px; height: 46px; padding: 3px; object-fit: contain; border: 1px solid #eadfc9; border-radius: 12px; background: #fff; }
+.login-brand strong { display: block; letter-spacing: .12em; font-family: "Outfit", sans-serif; font-size: 14px; }
+.login-brand span { display: block; margin-top: 3px; color: var(--gold); letter-spacing: .16em; font-size: 9px; font-weight: 800; }
+.login-heading h1 { margin: 10px 0 10px; color: var(--ink); font-size: clamp(30px, 4vw, 42px); line-height: 1.08; letter-spacing: -.045em; }
+.login-heading p { margin-bottom: 34px; color: var(--ink-muted); font-size: 14px; line-height: 1.6; }
+.login-form { display: grid; gap: 18px; }
+.login-form .field-label { gap: 8px; }
+.password-field { position: relative; }
+.password-field input { padding-right: 48px; }
+.password-field button { position: absolute; top: 50%; right: 13px; width: 30px; height: 30px; display: grid; place-items: center; transform: translateY(-50%); color: #98a2b3; border: 0; background: transparent; }
+.password-field button:hover { color: var(--gold-strong); }
+.login-submit { min-height: 48px; justify-content: center; gap: 8px; margin-top: 6px; }
+.login-error { display: flex; align-items: center; gap: 8px; padding: 11px 13px; color: #b42318; background: #fff1f0; border: 1px solid #fecdca; border-radius: 10px; font-size: 12px; font-weight: 700; }
+.login-footer { margin-top: 30px; color: #98a2b3; font-size: 11px; text-align: center; }
+@media (max-width: 800px) { .login-screen { grid-template-columns: 1fr; }.login-visual { min-height: 245px; padding: 24px; }.login-visual img { width: 150px; max-height: 145px; }.login-visual > span { margin-top: 8px; font-size: 12px; }.login-visual:before { width: 420px; height: 420px; }.login-visual:after { width: 280px; height: 280px; }.login-card-shell { min-height: calc(100vh - 245px); padding: 34px 22px 44px; }.login-brand { margin-bottom: 42px; } }
+@media (max-width: 420px) { .login-visual { min-height: 210px; }.login-visual img { width: 124px; max-height: 120px; }.login-card-shell { min-height: calc(100vh - 210px); }.login-brand { margin-bottom: 34px; }.login-heading h1 { font-size: 30px; } }

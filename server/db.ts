@@ -282,9 +282,26 @@ export async function loginLocally(username: string, password: string) {
   const credential = await db.select({
     userId: localCredentials.userId,
     passwordHash: localCredentials.passwordHash,
-  }).from(localCredentials).where(eq(localCredentials.username, normalizeUsername(username))).limit(1);
+  }).from(localCredentials).innerJoin(userProfiles, eq(userProfiles.userId, localCredentials.userId)).where(and(eq(localCredentials.username, normalizeUsername(username)), eq(userProfiles.active, true))).limit(1);
   if (!credential[0] || !validatePassword(password, credential[0].passwordHash)) return null;
   return createLocalSession(credential[0].userId);
+}
+
+export async function createLocalUser(input: { name: string; username: string; password: string; localRole: "administrator" | "manager" | "attendant" }, actorId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const username = normalizeUsername(input.username);
+  const existing = await db.select({ id: localCredentials.id }).from(localCredentials).where(eq(localCredentials.username, username)).limit(1);
+  if (existing[0]) throw new Error("Este login já está cadastrado");
+  const result = await db.transaction(async (tx) => {
+    const inserted = await tx.insert(users).values({ openId: `local-${randomBytes(24).toString("hex")}`, name: input.name.trim(), loginMethod: "local", role: "user" }).returning({ id: users.id });
+    const userId = Number(inserted[0].id);
+    await tx.insert(userProfiles).values({ userId, localRole: input.localRole, active: true });
+    await tx.insert(localCredentials).values({ userId, username, passwordHash: hashPassword(input.password) });
+    return userId;
+  });
+  await writeAudit(actorId, "CREATE_USER", "user", result, `Criou o usuário ${input.name.trim()} (${input.localRole})`);
+  return { id: result, success: true };
 }
 
 function centsOf(items: Array<{ quantity: number; unitPriceCents: number }>) {

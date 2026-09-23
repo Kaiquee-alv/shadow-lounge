@@ -38,6 +38,7 @@ import {
   createProductPriceRule,
   setProductPriceRuleActive,
   deleteProductPriceRule,
+  createLocalUser,
   getCommercialSettings,
   updateCommercialSettings,
   updateTableLimit,
@@ -242,6 +243,10 @@ export const appRouter = router({
     update: protectedProcedure.input(z.object({ userId: z.number().int().positive(), localRole, active: z.boolean() })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator"]);
       return updateUserAccess(input, ctx.user.id);
+    }),
+    create: protectedProcedure.input(z.object({ name: z.string().trim().min(2).max(120), username: z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,64}$/), password: z.string().min(12).max(128), localRole })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator"]);
+      return createLocalUser(input, ctx.user.id);
     }),
   }),
   productHistory: router({

@@ -12,9 +12,9 @@ import {
   AlertTriangle, ArrowDownRight, ArrowUpRight, ArrowRightLeft, BarChart3, Banknote, Beer, ChevronLeft, LoaderCircle, Printer,
   ClipboardList, Clock3, CreditCard, FileText, Flame, LayoutDashboard, LogIn, Menu,
   Package, Plus, ReceiptText, Search, Settings, ShieldCheck, Sparkles, Table2, Pencil, Trash2,
-  TrendingUp, Users, WalletCards, Zap,
+  TrendingUp, Users, WalletCards, Zap, Eye, EyeOff,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 type Page = "dashboard" | "tables" | "products" | "stock" | "finance" | "reports" | "users" | "settings";
 type Method = "pix" | "cash" | "debit" | "credit" | "other";
@@ -108,6 +108,9 @@ export default function Home() {
   const [connectionOnline, setConnectionOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [offlineTabs, setOfflineTabs] = useState(() => getOfflineTabs());
   const [offlineSyncBlocked, setOfflineSyncBlocked] = useState(false);
+  const [loginPasswordVisible, setLoginPasswordVisible] = useState(false);
+  const [userCreateOpen, setUserCreateOpen] = useState(false);
+  const [newUser, setNewUser] = useState({ name: "", username: "", password: "", localRole: "attendant" as "administrator" | "manager" | "attendant" });
   const utils = trpc.useUtils();
 
   const dashboardQuery = trpc.lounge.dashboard.useQuery({ rangeDays: 30 }, { enabled: isAuthenticated, retry: false });
@@ -122,6 +125,7 @@ export default function Home() {
   const historyQuery = trpc.productHistory.list.useQuery(historyInput, { enabled: isAuthenticated && page === "reports", retry: false });
   const pricingRulesQuery = trpc.pricing.rules.useQuery(undefined, { enabled: isAuthenticated && page === "settings", retry: false });
   const tabQuery = trpc.lounge.tab.useQuery({ tabId: selectedTabId && selectedTabId > 0 ? selectedTabId : 1 }, { enabled: isAuthenticated && !!selectedTabId && selectedTabId > 0, retry: false });
+  const workspaceQuery = trpc.workspace.bootstrap.useQuery(undefined, { enabled: isAuthenticated, retry: false });
 
   const refreshOperationalData = () => {
     void utils.lounge.tables.invalidate();
@@ -189,7 +193,8 @@ export default function Home() {
   const chargesMutation = trpc.lounge.setCharges.useMutation({ onSuccess: () => { refreshOperationalData(); toast.success("Gorjeta atualizada"); }, onError: (error) => toast.error(error.message) });
   const expenseMutation = trpc.finance.createExpense.useMutation({ onSuccess: () => { void utils.finance.expenses.invalidate(); void utils.lounge.dashboard.invalidate(); setExpenseOpen(false); setExpense({ description: "", category: "Fornecedores", amount: "", method: "pix", notes: "" }); toast.success("Despesa registrada no financeiro"); }, onError: (error) => toast.error(error.message) });
   const finishAuth = (message: string) => { setLoginOpen(false); setCredentials({ name: "", username: "", password: "" }); void utils.auth.me.invalidate(); toast.success(message); };
-  const localLoginMutation = trpc.localAuth.login.useMutation({ onSuccess: () => finishAuth("Acesso liberado"), onError: (error) => toast.error(error.message) });
+  const localLoginMutation = trpc.localAuth.login.useMutation({ onSuccess: () => { void utils.auth.me.invalidate(); void workspaceQuery.refetch(); setLoginOpen(false); setCredentials({ name: "", username: "", password: "" }); toast.success("Acesso liberado"); }, onError: (error) => toast.error(error.message) });
+  const createUserMutation = trpc.access.create.useMutation({ onSuccess: () => { void accessQuery.refetch(); setUserCreateOpen(false); setNewUser({ name: "", username: "", password: "", localRole: "attendant" }); toast.success("Usuário criado com sucesso"); }, onError: (error) => toast.error(error.message) });
   const localLogoutMutation = trpc.localAuth.logout.useMutation({ onSuccess: () => { utils.auth.me.setData(undefined, null); void utils.auth.me.invalidate(); toast.success("Sessão local encerrada"); }, onError: (error) => toast.error(error.message) });
   const syncOfflineMutation = trpc.lounge.syncOfflineTab.useMutation({ onSuccess: (result, variables) => { removeOfflineTab(variables.offlineKey); setOfflineTabs(getOfflineTabs()); setOfflineSyncBlocked(false); if (selectedTabId && selectedTabId < 0) setSelectedTabId(result.tabId); void utils.lounge.tables.invalidate(); void utils.lounge.tab.invalidate({ tabId: result.tabId }); toast.success("Comanda offline sincronizada"); }, onError: (error) => { setOfflineSyncBlocked(true); toast.error(`Sincronização pendente: ${error.message}`); } });
 
@@ -333,7 +338,21 @@ export default function Home() {
     return <button key={item.id} disabled={operationBusy} onClick={() => { setPage(item.id); setSelectedTabId(null); setMobileNav(false); }} className={`nav-item ${active ? "nav-item-active" : ""}`}><Icon size={19} /><span>{item.label}</span>{item.id === "stock" && dashboard.lowStock > 0 ? <i>{dashboard.lowStock}</i> : null}</button>;
   };
 
+  const localRole = workspaceQuery.data?.localRole;
+  const visibleNav = nav.filter((item) => {
+    if (localRole === "attendant") return item.id === "tables";
+    if (localRole === "manager") return item.id !== "users";
+    if (localRole === "administrator") return item.id !== "reports";
+    return item.id === "tables";
+  });
+  useEffect(() => {
+    if (!isAuthenticated || !localRole) return;
+    setPage(localRole === "attendant" ? "tables" : localRole === "manager" ? "dashboard" : "products");
+  }, [isAuthenticated, localRole]);
+
   if (loading) return <div className="loading-screen"><div className="loading-mark"><Flame size={30} /></div><span>Preparando operação</span></div>;
+  if (!isAuthenticated) return <LoginScreen credentials={credentials} setCredentials={setCredentials} passwordVisible={loginPasswordVisible} setPasswordVisible={setLoginPasswordVisible} mutation={localLoginMutation} />;
+  if (connectionOnline && workspaceQuery.isLoading) return <div className="loading-screen"><div className="loading-mark"><Flame size={30} /></div><span>Carregando seu perfil</span></div>;
 
   return (
     <div className="app-shell">
@@ -342,7 +361,7 @@ export default function Home() {
           <img className="brand-logo" src="/shadow-lounge-icon-white.png" alt="Shadow Lounge" />
         </div>
         <div className="shift-pill"><span className="pulse-dot" /> OPERAÇÃO AO VIVO</div>
-        <nav>{nav.map(navItem)}</nav>
+        <nav>{visibleNav.map(navItem)}</nav>
         <div className="sidebar-bottom">
           <button className={`nav-item ${page === "settings" ? "nav-item-active" : ""}`} disabled={addItemMutation.isPending || setItemMutation.isPending} onClick={() => setPage("settings")}><Settings size={19} /><span>Configurações</span></button>
           {user ? <button className="operator-card" onClick={endSession}><span className="operator-avatar">{(user.name || "O").slice(0, 1)}</span><span><b>{user.name || "Operador"}</b><small>Encerrar sessão</small></span></button> : <button className="login-card" onClick={() => setLoginOpen(true)}><LogIn size={18} /><span>Entrar no sistema</span></button>}
@@ -367,7 +386,7 @@ export default function Home() {
           {page === "stock" && <StockPage products={products} onAdjust={(product) => { setStockProduct(product); setStockQty("1"); setStockSheet(true); }} />}
           {page === "finance" && <FinancePage dashboard={dashboard} expenses={expensesQuery.data ?? [{ id: 1, description: "Reposição de bebidas", category: "Fornecedores", amountCents: 12450, method: "pix" as Method, occurredAt: new Date(), userName: "Rafael" }, { id: 2, description: "Conta de energia", category: "Energia", amountCents: 6800, method: "debit" as Method, occurredAt: new Date(Date.now() - 86400000), userName: "Rafael" }]} onNewExpense={() => requireAuth(() => setExpenseOpen(true))} />}
           {page === "reports" && <ReportsPage dashboard={dashboard} history={historyQuery.data ?? []} from={historyFrom} to={historyTo} setFrom={setHistoryFrom} setTo={setHistoryTo} />}
-          {page === "users" && <UsersPage audits={auditQuery.data ?? []} users={accessQuery.data ?? []} onUpdate={(input: any) => requireAuth(() => updateAccessMutation.mutate(input))} />}
+          {page === "users" && <UsersPage audits={auditQuery.data ?? []} users={accessQuery.data ?? []} onUpdate={(input: any) => requireAuth(() => updateAccessMutation.mutate(input))} onCreate={() => setUserCreateOpen(true)} />}
           {page === "settings" && <SettingsPage products={products} rules={pricingRulesQuery.data ?? []} tableLimit={commercialSettingsQuery.data?.maxTables ?? 20} onCreateRule={(input: any) => requireAuth(() => createPriceRuleMutation.mutate(input))} onSetRuleActive={(input: any) => requireAuth(() => setPriceRuleActiveMutation.mutate(input))} onDeleteRule={(input: any) => requireAuth(() => deletePriceRuleMutation.mutate(input))} onUpdateTableLimit={(maxTables) => requireAuth(() => updateTableLimitMutation.mutate({ maxTables }))} />}
         </div>
       </main>
@@ -397,6 +416,19 @@ export default function Home() {
             <Button className="primary-wide" onClick={() => localLoginMutation.mutate({ username: credentials.username, password: credentials.password })} disabled={localLoginMutation.isPending}>{localLoginMutation.isPending ? "Aguarde..." : "Entrar"}</Button>
           </div>
           <p className="local-access-note">Acesso local temporário. Use o usuário <b>atendente</b> ou <b>gerente</b>.</p>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={userCreateOpen} onOpenChange={setUserCreateOpen}>
+        <DialogContent className="payment-dialog">
+          <DialogHeader><div className="dialog-icon"><Users size={20} /></div><DialogTitle>Novo usuário</DialogTitle><DialogDescription>Crie um acesso independente para gerente, administrador ou atendente.</DialogDescription></DialogHeader>
+          <div className="expense-form">
+            <label className="field-label">Nome<Input autoFocus value={newUser.name} onChange={(event) => setNewUser({ ...newUser, name: event.target.value })} placeholder="Ex.: Ana Souza" /></label>
+            <label className="field-label">Usuário ou e-mail<Input autoComplete="username" value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value.toLowerCase() })} placeholder="Ex.: ana.souza" /></label>
+            <label className="field-label">Senha<Input autoComplete="new-password" type="password" value={newUser.password} onChange={(event) => setNewUser({ ...newUser, password: event.target.value })} placeholder="Mínimo de 12 caracteres" /></label>
+            <label className="field-label">Perfil<select value={newUser.localRole} onChange={(event) => setNewUser({ ...newUser, localRole: event.target.value as any })}><option value="manager">Gerente</option><option value="administrator">Administrador</option><option value="attendant">Atendente</option></select></label>
+            <Button className="primary-wide" disabled={createUserMutation.isPending} onClick={() => { if (newUser.name.trim().length < 2 || newUser.username.trim().length < 3 || newUser.password.length < 12) { toast.error("Preencha nome, login e uma senha com pelo menos 12 caracteres"); return; } createUserMutation.mutate(newUser); }}>{createUserMutation.isPending ? "Criando..." : "Criar usuário"}</Button>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -442,6 +474,11 @@ export default function Home() {
   );
 }
 
+function LoginScreen({ credentials, setCredentials, passwordVisible, setPasswordVisible, mutation }: any) {
+  const submit = (event: FormEvent) => { event.preventDefault(); mutation.mutate({ username: credentials.username, password: credentials.password }); };
+  return <main className="login-screen"><section className="login-visual"><div className="login-visual-glow" /><img src="/shadow-lounge-icon-white.png" alt="Shadow Lounge" /><span>Gestão elegante para uma operação sob controle.</span></section><section className="login-card-shell"><div className="login-card-content"><div className="login-brand"><img src="/shadow-lounge-icon-white.png" alt="Shadow Lounge" /><div><strong>SHADOW LOUNGE</strong><span>GESTÃO & OPERAÇÃO</span></div></div><div className="login-heading"><span className="section-kicker">ACESSO AO SISTEMA</span><h1>Bem-vindo de volta.</h1><p>Entre com seu usuário para acessar sua área de trabalho.</p></div><form className="login-form" onSubmit={submit}><label className="field-label">Usuário ou e-mail<Input autoFocus autoComplete="username" value={credentials.username} onChange={(event) => setCredentials({ ...credentials, username: event.target.value.toLowerCase() })} placeholder="seu.usuario" /></label><label className="field-label">Senha<div className="password-field"><Input autoComplete="current-password" type={passwordVisible ? "text" : "password"} value={credentials.password} onChange={(event) => setCredentials({ ...credentials, password: event.target.value })} placeholder="Digite sua senha" /><button type="button" onClick={() => setPasswordVisible(!passwordVisible)} aria-label={passwordVisible ? "Ocultar senha" : "Exibir senha"}>{passwordVisible ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></label>{mutation.error ? <div className="login-error" role="alert"><AlertTriangle size={16} /> Usuário ou senha inválidos.</div> : null}<Button type="submit" className="primary-wide login-submit" disabled={mutation.isPending || !credentials.username || !credentials.password}>{mutation.isPending ? "Entrando..." : "Entrar no sistema"}<ArrowUpRight size={17} /></Button></form><p className="login-footer">Acesso seguro · Shadow Lounge</p></div></section></main>;
+}
+
 function Dashboard({ dashboard, occupiedCount, onNavigate }: { dashboard: any; occupiedCount: number; onNavigate: (page: Page) => void }) {
   const cards = [
     { label: "Faturamento recebido", value: money(dashboard.paidCents), icon: TrendingUp, tone: "amber", detail: "+12,6% vs. período anterior" },
@@ -485,7 +522,7 @@ function ReportsPage({ dashboard, history, from, to, setFrom, setTo }: any) {
   return <div className="reports-page"><section className="page-intro"><div><span className="section-kicker">CENTRAL DE RELATÓRIOS</span><h2>Leitura rápida, decisão melhor.</h2><p>Consulte pedidos por produto e separe os resultados por período.</p></div><Button variant="outline"><FileText size={17} /> Exportar CSV</Button></section><section className="report-cards"><article><div className="report-icon amber"><TrendingUp size={20} /></div><span>Vendas</span><b>{money(dashboard.paidCents)}</b><small>{dashboard.salesCount} comandas com recebimentos</small></article><article><div className="report-icon green"><Package size={20} /></div><span>Produtos</span><b>{periodProductUnits} un</b><small>Itens lançados no período selecionado</small></article><article><div className="report-icon violet"><WalletCards size={20} /></div><span>Financeiro</span><b>{money(dashboard.resultCents)}</b><small>Resultado líquido operacional</small></article></section><section className="panel history-filter"><div><span className="section-kicker">PERÍODO DO HISTÓRICO</span><h3>Filtrar pedidos por data</h3></div><div className="history-date-fields"><label className="field-label">De<Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label><label className="field-label">Até<Input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label><Button variant="outline" onClick={() => { setFrom(""); setTo(""); }}>Limpar</Button></div></section><section className="panel report-table-panel"><div className="panel-header"><div><span className="section-kicker">HISTÓRICO DE PEDIDOS</span><h3>Pedidos por produto</h3></div><Badge variant="outline">{history.length} lançamentos</Badge></div>{history.length ? history.slice(0, 100).map((item: any) => <div className="report-product-row" key={item.id}><b>M{String(item.tableNumber).padStart(2, "0")}</b><span>{item.productName}<small>{item.tabCode} · {dateTime(item.createdAt)} {item.discountPercent > 0 ? `· ${item.discountPercent}% off` : ""}</small></span><i><em style={{ width: `${Math.min(100, item.quantity * 20)}%` }} /></i><strong>{item.quantity} un</strong><small>{money(item.quantity * item.unitPriceCents)}</small></div>) : <p className="empty-inline">Nenhum pedido encontrado neste período.</p>}</section></div>;
 }
 
-function UsersPage({ audits, users, onUpdate }: { audits: any[]; users: any[]; onUpdate: (input: any) => void }) {
+function UsersPage({ audits, users, onUpdate, onCreate }: { audits: any[]; users: any[]; onUpdate: (input: any) => void; onCreate: () => void }) {
   return <div className="users-page"><section className="page-intro"><div><span className="section-kicker">ACESSO E RASTREABILIDADE</span><h2>Equipe e auditoria.</h2><p>Defina quem pode operar mesas, estoque e financeiro.</p></div></section><section className="role-cards"><div><ShieldCheck size={20} /><b>Administrador</b><span>Acesso completo e controle de permissões</span></div><div><Users size={20} /><b>Gerente</b><span>Operação, estoque, financeiro e regras comerciais</span></div><div><ClipboardList size={20} /><b>Atendente</b><span>Mesas, comandas e pagamentos</span></div></section><section className="panel access-panel"><div className="panel-header"><div><span className="section-kicker">PERMISSÕES</span><h3>Usuários cadastrados</h3></div></div>{users.length ? users.map((item: any) => <div className="access-row" key={item.id}><div><b>{item.name || item.username || "Usuário"}</b><small>{item.email || item.username || "Acesso local"}</small></div><select value={item.localRole || "attendant"} onChange={(e) => onUpdate({ userId: item.id, localRole: e.target.value, active: item.active !== false })}><option value="administrator">Administrador</option><option value="manager">Gerente</option><option value="attendant">Atendente</option></select><label className="checkbox-line"><input type="checkbox" checked={item.active !== false} onChange={(e) => onUpdate({ userId: item.id, localRole: item.localRole || "attendant", active: e.target.checked })} /><span>Ativo</span></label></div>) : <p className="empty-inline">Nenhum usuário cadastrado.</p>}</section><section className="panel audit-panel"><div className="panel-header"><div><span className="section-kicker">LOGS IMUTÁVEIS</span><h3>Auditoria recente</h3></div></div>{audits.length ? audits.map((audit) => <div className="audit-row" key={audit.id}><span className="audit-action">{audit.action.replace("_", " ")}</span><p>{audit.description}<small>{audit.userName || "Operador"} · {dateTime(audit.createdAt)}</small></p></div>) : <div className="empty-audit"><ShieldCheck size={22} /><div><b>As ações relevantes serão registradas aqui.</b><span>Abra uma comanda, ajuste estoque ou receba um pagamento para gerar o histórico.</span></div></div>}</section></div>;
 }
 
