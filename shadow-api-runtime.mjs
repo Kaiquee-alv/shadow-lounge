@@ -519,13 +519,6 @@ var categoriesSeed = [
 ];
 var productsSeed = [
   { name: "Heineken Long Neck", code: "HEI-330", category: "Cervejas", cost: 850, price: 1500, stock: 48, minimum: 12 },
-  { name: "Budweiser Long Neck", code: "BUD-330", category: "Cervejas", cost: 650, price: 1200, stock: 36, minimum: 10 },
-  { name: "Red Bull", code: "RED-250", category: "Energ\xE9ticos", cost: 900, price: 1800, stock: 17, minimum: 12 },
-  { name: "Coca-Cola Lata", code: "COCA-350", category: "Refrigerantes", cost: 380, price: 700, stock: 62, minimum: 15 },
-  { name: "Narguil\xE9 Premium", code: "NARG-PRM", category: "Narguil\xE9", cost: 1100, price: 4500, stock: 20, minimum: 4 },
-  { name: "Ess\xEAncia Mint Ice", code: "ESS-MINT", category: "Ess\xEAncias", cost: 900, price: 2200, stock: 8, minimum: 10 },
-  { name: "Carv\xE3o C\xFAbico", code: "CARV-1", category: "Carv\xF5es", cost: 450, price: 1200, stock: 28, minimum: 8 },
-  { name: "Por\xE7\xE3o da Casa", code: "PET-001", category: "Petiscos", cost: 1500, price: 3900, stock: 14, minimum: 5 }
 ];
 async function ensureInitialData() {
   const db = await getDb();
