@@ -611,16 +611,22 @@ function normalizeUsername(username) {
 }
 var FIXED_USERS = [
   {
-    username: "atendente",
-    name: "Atendente",
-    password: process.env.FIXED_ATTENDANT_PASSWORD ?? "v7Xc6Rbc64dVgmZtPhR7NCt_",
-    localRole: "attendant"
+    username: "admin",
+    name: "Administrador",
+    password: process.env.FIXED_ADMIN_PASSWORD ?? "shadow1020",
+    localRole: "administrator"
   },
   {
     username: "gerente",
     name: "Gerente",
-    password: process.env.FIXED_MANAGER_PASSWORD ?? "UZlNDUD8YPkacwEvCB2eQnpZ",
+    password: process.env.FIXED_MANAGER_PASSWORD ?? "shadow1020",
     localRole: "manager"
+  },
+  {
+    username: "atendente",
+    name: "Atendente",
+    password: process.env.FIXED_ATTENDANT_PASSWORD ?? "shadow1020",
+    localRole: "attendant"
   }
 ];
 async function ensureFixedUsers() {
@@ -696,9 +702,25 @@ async function loginLocally(username, password) {
   const credential = await db.select({
     userId: localCredentials.userId,
     passwordHash: localCredentials.passwordHash
-  }).from(localCredentials).where(eq(localCredentials.username, normalizeUsername(username))).limit(1);
+  }).from(localCredentials).innerJoin(userProfiles, eq(userProfiles.userId, localCredentials.userId)).where(and(eq(localCredentials.username, normalizeUsername(username)), eq(userProfiles.active, true))).limit(1);
   if (!credential[0] || !validatePassword(password, credential[0].passwordHash)) return null;
   return createLocalSession(credential[0].userId);
+}
+async function createLocalUser(input, actorId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  const username = normalizeUsername(input.username);
+  const existing = await db.select({ id: localCredentials.id }).from(localCredentials).where(eq(localCredentials.username, username)).limit(1);
+  if (existing[0]) throw new Error("Este login j\xE1 est\xE1 cadastrado");
+  const result = await db.transaction(async (tx) => {
+    const inserted = await tx.insert(users).values({ openId: `local-${randomBytes(24).toString("hex")}`, name: input.name.trim(), loginMethod: "local", role: "user" }).returning({ id: users.id });
+    const userId = Number(inserted[0].id);
+    await tx.insert(userProfiles).values({ userId, localRole: input.localRole, active: true });
+    await tx.insert(localCredentials).values({ userId, username, passwordHash: hashPassword(input.password) });
+    return userId;
+  });
+  await writeAudit(actorId, "CREATE_USER", "user", result, `Criou o usu\xE1rio ${input.name.trim()} (${input.localRole})`);
+  return { id: result, success: true };
 }
 function centsOf(items) {
   return items.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
@@ -1568,6 +1590,10 @@ var appRouter = router({
     update: protectedProcedure.input(z2.object({ userId: z2.number().int().positive(), localRole, active: z2.boolean() })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator"]);
       return updateUserAccess(input, ctx.user.id);
+    }),
+    create: protectedProcedure.input(z2.object({ name: z2.string().trim().min(2).max(120), username: z2.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,64}$/), password: z2.string().min(12).max(128), localRole })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator"]);
+      return createLocalUser(input, ctx.user.id);
     })
   }),
   productHistory: router({

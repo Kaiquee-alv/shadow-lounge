@@ -183,16 +183,22 @@ function normalizeUsername(username: string) {
 
 const FIXED_USERS = [
   {
-    username: "atendente",
-    name: "Atendente",
-    password: process.env.FIXED_ATTENDANT_PASSWORD ?? "v7Xc6Rbc64dVgmZtPhR7NCt_",
-    localRole: "attendant" as const,
+    username: "admin",
+    name: "Administrador",
+    password: process.env.FIXED_ADMIN_PASSWORD ?? "shadow1020",
+    localRole: "administrator" as const,
   },
   {
     username: "gerente",
     name: "Gerente",
-    password: process.env.FIXED_MANAGER_PASSWORD ?? "UZlNDUD8YPkacwEvCB2eQnpZ",
+    password: process.env.FIXED_MANAGER_PASSWORD ?? "shadow1020",
     localRole: "manager" as const,
+  },
+  {
+    username: "atendente",
+    name: "Atendente",
+    password: process.env.FIXED_ATTENDANT_PASSWORD ?? "shadow1020",
+    localRole: "attendant" as const,
   },
 ];
 
