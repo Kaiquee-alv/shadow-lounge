@@ -1393,6 +1393,16 @@ async function updateTableLimit(maxTables, userId) {
     return { maxTables: normalized };
   });
 }
+async function updateNegativeStockPolicy(preventNegativeStock, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  await db.insert(settings).values({ id: 1, preventNegativeStock }).onConflictDoUpdate({
+    target: settings.id,
+    set: { preventNegativeStock, updatedAt: /* @__PURE__ */ new Date() }
+  });
+  await writeAudit(userId, "UPDATE_SETTINGS", "settings", 1, `${preventNegativeStock ? "Ativou" : "Desativou"} a prote\xE7\xE3o contra estoque negativo`);
+  return getCommercialSettings();
+}
 async function updateCommercialSettings(input, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
@@ -1682,6 +1692,10 @@ var appRouter = router({
     })
   }),
   commercial: router({
+    updateNegativeStockPolicy: protectedProcedure.input(z2.object({ preventNegativeStock: z2.boolean() })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return updateNegativeStockPolicy(input.preventNegativeStock, ctx.user.id);
+    }),
     updateTableLimit: protectedProcedure.input(z2.object({ maxTables: z2.number().int().min(1).max(100) })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return updateTableLimit(input.maxTables, ctx.user.id);

@@ -43,6 +43,7 @@ import {
   createLocalUser,
   deleteLocalUser,
   getCommercialSettings,
+  updateNegativeStockPolicy,
   updateCommercialSettings,
   updateTableLimit,
 } from "./db.js";
@@ -291,6 +292,10 @@ export const appRouter = router({
     }),
   }),
   commercial: router({
+    updateNegativeStockPolicy: protectedProcedure.input(z.object({ preventNegativeStock: z.boolean() })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return updateNegativeStockPolicy(input.preventNegativeStock, ctx.user.id);
+    }),
     updateTableLimit: protectedProcedure.input(z.object({ maxTables: z.number().int().min(1).max(100) })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return updateTableLimit(input.maxTables, ctx.user.id);

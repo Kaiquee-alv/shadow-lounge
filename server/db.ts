@@ -1040,6 +1040,17 @@ export async function updateTableLimit(maxTables: number, userId: number) {
   });
 }
 
+export async function updateNegativeStockPolicy(preventNegativeStock: boolean, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  await db.insert(settings).values({ id: 1, preventNegativeStock }).onConflictDoUpdate({
+    target: settings.id,
+    set: { preventNegativeStock, updatedAt: new Date() },
+  });
+  await writeAudit(userId, "UPDATE_SETTINGS", "settings", 1, `${preventNegativeStock ? "Ativou" : "Desativou"} a proteção contra estoque negativo`);
+  return getCommercialSettings();
+}
+
 export async function updateCommercialSettings(input: {
   happyHourEnabled: boolean;
   happyHourStart: string;
