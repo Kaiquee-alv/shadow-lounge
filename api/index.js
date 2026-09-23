@@ -972,7 +972,9 @@ async function addTabItem(input, userId, localRole2) {
         unitPriceCents,
         discountPercent,
         discountReason,
-        note: input.note ?? existing[0].note
+        note: input.note ?? existing[0].note,
+        addedBy: userId,
+        updatedAt: /* @__PURE__ */ new Date()
       }).where(eq(tabItems.id, existing[0].id));
     } else {
       await tx.insert(tabItems).values({
@@ -1301,13 +1303,26 @@ async function getReportSummary(from, to) {
 async function listUserAccess() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
-  return db.select({ id: users.id, name: users.name, email: users.email, systemRole: users.role, localRole: userProfiles.localRole, active: userProfiles.active, username: localCredentials.username }).from(users).leftJoin(userProfiles, eq(userProfiles.userId, users.id)).leftJoin(localCredentials, eq(localCredentials.userId, users.id)).orderBy(asc(users.name));
+  return db.select({ id: users.id, name: users.name, email: users.email, systemRole: users.role, localRole: userProfiles.localRole, active: userProfiles.active, username: localCredentials.username }).from(users).innerJoin(userProfiles, eq(userProfiles.userId, users.id)).innerJoin(localCredentials, eq(localCredentials.userId, users.id)).orderBy(asc(users.name));
 }
 async function updateUserAccess(input, actorId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   await db.insert(userProfiles).values({ userId: input.userId, localRole: input.localRole, active: input.active }).onConflictDoUpdate({ target: userProfiles.userId, set: { localRole: input.localRole, active: input.active } });
   await writeAudit(actorId, "UPDATE_ACCESS", "user", input.userId, `Atualizou permiss\xE3o para ${input.localRole} (${input.active ? "ativo" : "inativo"})`);
+  return { success: true };
+}
+async function deleteLocalUser(userId, actorId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  const credential = await db.select({ username: localCredentials.username, name: users.name }).from(localCredentials).innerJoin(users, eq(users.id, localCredentials.userId)).where(eq(localCredentials.userId, userId)).limit(1);
+  if (!credential[0]) throw new Error("Usu\xE1rio n\xE3o encontrado");
+  if (credential[0].username === "admin") throw new Error("O perfil admin n\xE3o pode ser exclu\xEDdo");
+  await db.transaction(async (tx) => {
+    await tx.delete(localCredentials).where(eq(localCredentials.userId, userId));
+    await tx.delete(userProfiles).where(eq(userProfiles.userId, userId));
+  });
+  await writeAudit(actorId, "DELETE_USER", "user", userId, `Excluiu o acesso de ${credential[0].name || credential[0].username}; hist\xF3rico operacional preservado`);
   return { success: true };
 }
 async function createProductCategory(name, userId) {
@@ -1634,6 +1649,10 @@ var appRouter = router({
     create: protectedProcedure.input(z2.object({ name: z2.string().trim().min(2).max(120), username: z2.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,64}$/), password: z2.string().min(12).max(128), localRole })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator"]);
       return createLocalUser(input, ctx.user.id);
+    }),
+    delete: protectedProcedure.input(z2.object({ userId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator"]);
+      return deleteLocalUser(input.userId, ctx.user.id);
     })
   }),
   productHistory: router({

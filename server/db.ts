@@ -587,6 +587,8 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
         discountPercent,
         discountReason,
         note: input.note ?? existing[0].note,
+        addedBy: userId,
+        updatedAt: new Date(),
       }).where(eq(tabItems.id, existing[0].id));
     } else {
       await tx.insert(tabItems).values({
@@ -934,7 +936,7 @@ export async function listUserAccess() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.select({ id: users.id, name: users.name, email: users.email, systemRole: users.role, localRole: userProfiles.localRole, active: userProfiles.active, username: localCredentials.username })
-    .from(users).leftJoin(userProfiles, eq(userProfiles.userId, users.id)).leftJoin(localCredentials, eq(localCredentials.userId, users.id)).orderBy(asc(users.name));
+    .from(users).innerJoin(userProfiles, eq(userProfiles.userId, users.id)).innerJoin(localCredentials, eq(localCredentials.userId, users.id)).orderBy(asc(users.name));
 }
 
 export async function updateUserAccess(input: { userId: number; localRole: "administrator" | "manager" | "attendant"; active: boolean }, actorId: number) {
@@ -942,6 +944,20 @@ export async function updateUserAccess(input: { userId: number; localRole: "admi
   if (!db) throw new Error("Banco de dados indisponível");
   await db.insert(userProfiles).values({ userId: input.userId, localRole: input.localRole, active: input.active }).onConflictDoUpdate({ target: userProfiles.userId, set: { localRole: input.localRole, active: input.active } });
   await writeAudit(actorId, "UPDATE_ACCESS", "user", input.userId, `Atualizou permissão para ${input.localRole} (${input.active ? "ativo" : "inativo"})`);
+  return { success: true };
+}
+
+export async function deleteLocalUser(userId: number, actorId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const credential = await db.select({ username: localCredentials.username, name: users.name }).from(localCredentials).innerJoin(users, eq(users.id, localCredentials.userId)).where(eq(localCredentials.userId, userId)).limit(1);
+  if (!credential[0]) throw new Error("Usuário não encontrado");
+  if (credential[0].username === "admin") throw new Error("O perfil admin não pode ser excluído");
+  await db.transaction(async (tx) => {
+    await tx.delete(localCredentials).where(eq(localCredentials.userId, userId));
+    await tx.delete(userProfiles).where(eq(userProfiles.userId, userId));
+  });
+  await writeAudit(actorId, "DELETE_USER", "user", userId, `Excluiu o acesso de ${credential[0].name || credential[0].username}; histórico operacional preservado`);
   return { success: true };
 }
 

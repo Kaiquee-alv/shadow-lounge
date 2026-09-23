@@ -432,3 +432,7 @@ h3 { font-size: 17px; font-weight: 700; }
 .audit-panel .audit-action { min-width: 76px; padding: 4px 5px; font-size: 8px; }
 .audit-panel .audit-row p { font-size: 10px; line-height: 1.25; }
 .audit-panel .audit-row small { margin-top: 1px; font-size: 9px; }
+
+.access-delete { width: 30px; height: 30px; display: grid; place-items: center; color: #c45151; border: 1px solid rgba(196,81,81,.28); border-radius: 7px; background: rgba(196,81,81,.07); }
+.access-delete:hover { color: #fff; background: #b64343; }
+.protected-access { color: #a77b2d; font-size: 9px; font-weight: 800; white-space: nowrap; }
