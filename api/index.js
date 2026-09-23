@@ -794,7 +794,7 @@ async function getTabDetails(tabId) {
     openedByName: users.name
   }).from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).leftJoin(users, eq(tabs.openedBy, users.id)).where(eq(tabs.id, tabId)).limit(1);
   if (!tab[0]) throw new Error("Comanda n\xE3o encontrada");
-  const [items, paymentRows] = await Promise.all([
+  const [items, paymentRows, launchHistory] = await Promise.all([
     db.select({
       id: tabItems.id,
       productId: tabItems.productId,
@@ -806,20 +806,28 @@ async function getTabDetails(tabId) {
       discountPercent: tabItems.discountPercent,
       discountReason: tabItems.discountReason,
       note: tabItems.note,
+      addedByName: users.name,
       createdAt: tabItems.createdAt
-    }).from(tabItems).where(eq(tabItems.tabId, tabId)).orderBy(desc(tabItems.createdAt)),
+    }).from(tabItems).leftJoin(users, eq(tabItems.addedBy, users.id)).where(eq(tabItems.tabId, tabId)).orderBy(desc(tabItems.createdAt)),
     db.select({
       id: payments.id,
       amountCents: payments.amountCents,
       method: payments.method,
       createdAt: payments.createdAt,
       receivedByName: users.name
-    }).from(payments).leftJoin(users, eq(payments.receivedBy, users.id)).where(eq(payments.tabId, tabId)).orderBy(desc(payments.createdAt))
+    }).from(payments).leftJoin(users, eq(payments.receivedBy, users.id)).where(eq(payments.tabId, tabId)).orderBy(desc(payments.createdAt)),
+    db.select({
+      id: auditLogs.id,
+      action: auditLogs.action,
+      description: auditLogs.description,
+      createdAt: auditLogs.createdAt,
+      userName: users.name
+    }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).where(and(eq(auditLogs.entityType, "tab"), eq(auditLogs.entityId, tabId), inArray(auditLogs.action, ["ADD_ITEM", "UPDATE_ITEM", "REMOVE_ITEM"]))).orderBy(desc(auditLogs.createdAt)).limit(100)
   ]);
   const totals = tabTotals(items, tab[0]);
   const totalCents = totals.totalCents;
   const paidCents = paymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
-  return { ...tab[0], items, payments: paymentRows, ...totals, paidCents, balanceCents: Math.max(totalCents - paidCents, 0) };
+  return { ...tab[0], items, payments: paymentRows, launchHistory, ...totals, paidCents, balanceCents: Math.max(totalCents - paidCents, 0) };
 }
 async function setTabCustomerName(tabId, customerName, userId) {
   const db = await getDb();

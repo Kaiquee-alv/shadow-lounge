@@ -405,3 +405,11 @@ h3 { font-size: 17px; font-weight: 700; }
 .login-footer { margin-top: 30px; color: #98a2b3; font-size: 11px; text-align: center; }
 @media (max-width: 800px) { .login-screen { grid-template-columns: 1fr; }.login-visual { min-height: 245px; padding: 24px; }.login-visual img { width: 150px; max-height: 145px; }.login-visual > span { margin-top: 8px; font-size: 12px; }.login-visual:before { width: 420px; height: 420px; }.login-visual:after { width: 280px; height: 280px; }.login-card-shell { min-height: calc(100vh - 245px); padding: 34px 22px 44px; }.login-brand { margin-bottom: 42px; } }
 @media (max-width: 420px) { .login-visual { min-height: 210px; }.login-visual img { width: 124px; max-height: 120px; }.login-card-shell { min-height: calc(100vh - 210px); }.login-brand { margin-bottom: 34px; }.login-heading h1 { font-size: 30px; } }
+
+.launch-history-panel { margin-top: 16px; }
+.launch-history-list { padding: 0 20px 18px; }
+.launch-history-row { display: grid; grid-template-columns: 94px 1fr; gap: 12px; align-items: start; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.launch-history-row:last-child { border-bottom: 0; }
+.launch-history-row p { margin: 0; color: var(--ink); font-size: 12px; line-height: 1.45; }
+.launch-history-row p small { display: block; margin-top: 3px; color: var(--ink-muted); font-size: 10px; }
+@media (max-width: 520px) { .launch-history-row { grid-template-columns: 1fr; gap: 5px; } }
