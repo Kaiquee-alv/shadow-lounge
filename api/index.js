@@ -1106,7 +1106,7 @@ async function listProducts(query) {
     minimumStock: products.minimumStock,
     active: products.active,
     notes: products.notes
-  }).from(products).leftJoin(productCategories, eq(products.categoryId, productCategories.id)).orderBy(asc(products.name));
+  }).from(products).leftJoin(productCategories, eq(products.categoryId, productCategories.id)).where(eq(products.active, true)).orderBy(asc(products.name));
   const normalized = query?.trim().toLocaleLowerCase();
   return normalized ? rows.filter((row) => `${row.name} ${row.code} ${row.categoryName ?? ""}`.toLocaleLowerCase().includes(normalized)) : rows;
 }
