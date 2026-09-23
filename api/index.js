@@ -1136,10 +1136,16 @@ async function deleteProduct(productId, userId) {
   const product = await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.id, productId)).limit(1);
   if (!product[0]) throw new Error("Produto n\xE3o encontrado");
   const usedInTabs = await db.select({ id: tabItems.id }).from(tabItems).where(eq(tabItems.productId, productId)).limit(1);
-  if (usedInTabs[0]) throw new Error("Este produto j\xE1 foi lan\xE7ado em uma comanda e n\xE3o pode ser removido. Desative-o no cadastro.");
+  const usedInStock = await db.select({ id: stockMovements.id }).from(stockMovements).where(eq(stockMovements.productId, productId)).limit(1);
+  if (usedInTabs[0] || usedInStock[0]) {
+    await db.update(products).set({ active: false, updatedAt: /* @__PURE__ */ new Date() }).where(eq(products.id, productId));
+    await writeAudit(userId, "DEACTIVATE_PRODUCT", "product", productId, `Desativou ${product[0].name} para preservar o hist\xF3rico`);
+    return { success: true, deleted: false };
+  }
+  await db.delete(productPriceRules).where(eq(productPriceRules.productId, productId));
   await db.delete(products).where(eq(products.id, productId));
   await writeAudit(userId, "DELETE_PRODUCT", "product", productId, `Removeu ${product[0].name}`);
-  return { success: true };
+  return { success: true, deleted: true };
 }
 async function adjustStock(input, userId) {
   const db = await getDb();

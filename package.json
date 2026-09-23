@@ -11,7 +11,8 @@
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
-    "db:push": "node scripts/ensure-db.mjs"
+    "db:push": "node scripts/ensure-db.mjs",
+    "db:reset-operacao": "tsx scripts/reset_operational_data.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
