@@ -423,3 +423,12 @@ h3 { font-size: 17px; font-weight: 700; }
 .report-product-summary .report-product-row { grid-template-columns: 1fr auto; }
 .report-loading { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 180px; color: var(--ink-muted); font-size: 13px; }
 @media (max-width: 840px) { .report-detail-grid { grid-template-columns: 1fr; } }
+
+/* Relatórios compactos */
+.report-table-panel .report-product-row { padding: 7px 0; gap: 7px; min-height: 34px; }
+.report-table-panel .report-product-row > span { font-size: 11px; }
+.report-table-panel .report-product-row > span small { display: block; margin-top: 1px; font-size: 9px; }
+.audit-panel .audit-row { padding: 7px 0; gap: 8px; }
+.audit-panel .audit-action { min-width: 76px; padding: 4px 5px; font-size: 8px; }
+.audit-panel .audit-row p { font-size: 10px; line-height: 1.25; }
+.audit-panel .audit-row small { margin-top: 1px; font-size: 9px; }
