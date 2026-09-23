@@ -1266,6 +1266,38 @@ async function listProductHistory(productId, from, to) {
   }).from(tabItems).innerJoin(tabs, eq(tabItems.tabId, tabs.id)).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).where(filters.length ? and(...filters) : void 0).orderBy(desc(tabItems.createdAt)).limit(200);
   return rows;
 }
+async function getReportSummary(from, to) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  const paymentFilters = [from ? gte(payments.createdAt, from) : void 0, to ? lte(payments.createdAt, to) : void 0].filter(Boolean);
+  const productFilters = [from ? gte(tabItems.createdAt, from) : void 0, to ? lte(tabItems.createdAt, to) : void 0].filter(Boolean);
+  const expenseFilters = [from ? gte(expenses.occurredAt, from) : void 0, to ? lte(expenses.occurredAt, to) : void 0].filter(Boolean);
+  const auditFilters = [eq(auditLogs.entityType, "tab"), inArray(auditLogs.action, ["ADD_ITEM", "UPDATE_ITEM", "REMOVE_ITEM"]), from ? gte(auditLogs.createdAt, from) : void 0, to ? lte(auditLogs.createdAt, to) : void 0].filter(Boolean);
+  const [paymentRows, productRows, expenseRows, launchRows] = await Promise.all([
+    db.select({ amountCents: payments.amountCents, method: payments.method, tabId: payments.tabId }).from(payments).where(paymentFilters.length ? and(...paymentFilters) : void 0),
+    db.select({ productName: tabItems.productName, quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents, unitCostCents: tabItems.unitCostCents }).from(tabItems).where(productFilters.length ? and(...productFilters) : void 0),
+    db.select({ amountCents: expenses.amountCents }).from(expenses).where(expenseFilters.length ? and(...expenseFilters) : void 0),
+    db.select({ id: auditLogs.id, action: auditLogs.action, description: auditLogs.description, createdAt: auditLogs.createdAt, userName: users.name }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).where(and(...auditFilters)).orderBy(desc(auditLogs.createdAt)).limit(300)
+  ]);
+  const productsMap = /* @__PURE__ */ new Map();
+  for (const row of productRows) {
+    const current = productsMap.get(row.productName) ?? { productName: row.productName, quantity: 0, totalCents: 0 };
+    current.quantity += row.quantity;
+    current.totalCents += row.quantity * row.unitPriceCents;
+    productsMap.set(row.productName, current);
+  }
+  const paymentMap = /* @__PURE__ */ new Map();
+  for (const row of paymentRows) {
+    const current = paymentMap.get(row.method) ?? { method: row.method, totalCents: 0, count: 0 };
+    current.totalCents += row.amountCents;
+    current.count += 1;
+    paymentMap.set(row.method, current);
+  }
+  const salesCents = paymentRows.reduce((sum, row) => sum + row.amountCents, 0);
+  const costCents = productRows.reduce((sum, row) => sum + row.quantity * row.unitCostCents, 0);
+  const expensesCents = expenseRows.reduce((sum, row) => sum + row.amountCents, 0);
+  return { salesCents, salesCount: new Set(paymentRows.map((row) => row.tabId)).size, productUnits: productRows.reduce((sum, row) => sum + row.quantity, 0), costCents, expensesCents, resultCents: salesCents - expensesCents - costCents, paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents), products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity), launches: launchRows };
+}
 async function listUserAccess() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
@@ -1608,6 +1640,12 @@ var appRouter = router({
     list: protectedProcedure.input(z2.object({ productId: z2.number().int().positive().optional(), from: z2.date().optional(), to: z2.date().optional() }).optional()).query(async ({ ctx, input }) => {
       await operator(ctx);
       return listProductHistory(input?.productId, input?.from, input?.to);
+    })
+  }),
+  reports: router({
+    summary: protectedProcedure.input(z2.object({ from: z2.date().optional(), to: z2.date().optional() }).optional()).query(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return getReportSummary(input?.from, input?.to);
     })
   }),
   pricing: router({

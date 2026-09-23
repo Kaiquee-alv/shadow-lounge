@@ -413,3 +413,13 @@ h3 { font-size: 17px; font-weight: 700; }
 .launch-history-row p { margin: 0; color: var(--ink); font-size: 12px; line-height: 1.45; }
 .launch-history-row p small { display: block; margin-top: 3px; color: var(--ink-muted); font-size: 10px; }
 @media (max-width: 520px) { .launch-history-row { grid-template-columns: 1fr; gap: 5px; } }
+
+.request-lock { position: fixed; z-index: 100; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: #fff; background: rgba(15, 18, 26, .58); backdrop-filter: blur(3px); font-size: 13px; font-weight: 800; }
+.report-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.report-payment-bars { padding: 4px 20px 20px; }
+.report-payment-bars > div { padding: 12px 0; }
+.report-payment-bars small { display: block; margin-top: 5px; color: var(--ink-muted); font-size: 10px; }
+.report-product-summary { padding: 0 20px 10px; }
+.report-product-summary .report-product-row { grid-template-columns: 1fr auto; }
+.report-loading { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 180px; color: var(--ink-muted); font-size: 13px; }
+@media (max-width: 840px) { .report-detail-grid { grid-template-columns: 1fr; } }

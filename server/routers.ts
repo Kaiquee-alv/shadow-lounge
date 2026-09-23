@@ -11,6 +11,7 @@ import {
   createExpense,
   ensureInitialData,
   getDashboard,
+  getReportSummary,
   getLocalRole,
   getTabDetails,
   listProductHistory,
@@ -253,6 +254,12 @@ export const appRouter = router({
     list: protectedProcedure.input(z.object({ productId: z.number().int().positive().optional(), from: z.date().optional(), to: z.date().optional() }).optional()).query(async ({ ctx, input }) => {
       await operator(ctx);
       return listProductHistory(input?.productId, input?.from, input?.to);
+    }),
+  }),
+  reports: router({
+    summary: protectedProcedure.input(z.object({ from: z.date().optional(), to: z.date().optional() }).optional()).query(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return getReportSummary(input?.from, input?.to);
     }),
   }),
   pricing: router({

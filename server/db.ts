@@ -897,6 +897,39 @@ export async function listProductHistory(productId?: number, from?: Date, to?: D
   return rows;
 }
 
+export async function getReportSummary(from?: Date, to?: Date) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const paymentFilters = [from ? gte(payments.createdAt, from) : undefined, to ? lte(payments.createdAt, to) : undefined].filter(Boolean);
+  const productFilters = [from ? gte(tabItems.createdAt, from) : undefined, to ? lte(tabItems.createdAt, to) : undefined].filter(Boolean);
+  const expenseFilters = [from ? gte(expenses.occurredAt, from) : undefined, to ? lte(expenses.occurredAt, to) : undefined].filter(Boolean);
+  const auditFilters = [eq(auditLogs.entityType, "tab"), inArray(auditLogs.action, ["ADD_ITEM", "UPDATE_ITEM", "REMOVE_ITEM"]), from ? gte(auditLogs.createdAt, from) : undefined, to ? lte(auditLogs.createdAt, to) : undefined].filter(Boolean);
+  const [paymentRows, productRows, expenseRows, launchRows] = await Promise.all([
+    db.select({ amountCents: payments.amountCents, method: payments.method, tabId: payments.tabId }).from(payments).where(paymentFilters.length ? and(...paymentFilters) : undefined),
+    db.select({ productName: tabItems.productName, quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents, unitCostCents: tabItems.unitCostCents }).from(tabItems).where(productFilters.length ? and(...productFilters) : undefined),
+    db.select({ amountCents: expenses.amountCents }).from(expenses).where(expenseFilters.length ? and(...expenseFilters) : undefined),
+    db.select({ id: auditLogs.id, action: auditLogs.action, description: auditLogs.description, createdAt: auditLogs.createdAt, userName: users.name }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).where(and(...auditFilters)).orderBy(desc(auditLogs.createdAt)).limit(300),
+  ]);
+  const productsMap = new Map<string, { productName: string; quantity: number; totalCents: number }>();
+  for (const row of productRows) {
+    const current = productsMap.get(row.productName) ?? { productName: row.productName, quantity: 0, totalCents: 0 };
+    current.quantity += row.quantity;
+    current.totalCents += row.quantity * row.unitPriceCents;
+    productsMap.set(row.productName, current);
+  }
+  const paymentMap = new Map<string, { method: string; totalCents: number; count: number }>();
+  for (const row of paymentRows) {
+    const current = paymentMap.get(row.method) ?? { method: row.method, totalCents: 0, count: 0 };
+    current.totalCents += row.amountCents;
+    current.count += 1;
+    paymentMap.set(row.method, current);
+  }
+  const salesCents = paymentRows.reduce((sum, row) => sum + row.amountCents, 0);
+  const costCents = productRows.reduce((sum, row) => sum + row.quantity * row.unitCostCents, 0);
+  const expensesCents = expenseRows.reduce((sum, row) => sum + row.amountCents, 0);
+  return { salesCents, salesCount: new Set(paymentRows.map((row) => row.tabId)).size, productUnits: productRows.reduce((sum, row) => sum + row.quantity, 0), costCents, expensesCents, resultCents: salesCents - expensesCents - costCents, paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents), products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity), launches: launchRows };
+}
+
 export async function listUserAccess() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
