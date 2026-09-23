@@ -35,6 +35,7 @@ import {
   transferTab,
   createProductCategory,
   deleteProduct,
+  setProductActive,
   updateUserAccess,
   createProductPriceRule,
   setProductPriceRuleActive,
@@ -211,6 +212,10 @@ export const appRouter = router({
     deleteProduct: protectedProcedure.input(z.object({ productId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return deleteProduct(input.productId, ctx.user.id);
+    }),
+    setProductActive: protectedProcedure.input(z.object({ productId: z.number().int().positive(), active: z.boolean() })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return setProductActive(input.productId, input.active, ctx.user.id);
     }),
     adjust: protectedProcedure.input(z.object({
       productId: z.number().int().positive(), quantity: z.number().int().min(1).max(100000), direction: z.enum(["in", "out"]), reason: z.string().min(2).max(120),

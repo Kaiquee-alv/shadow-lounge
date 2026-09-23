@@ -436,3 +436,10 @@ h3 { font-size: 17px; font-weight: 700; }
 .access-delete { width: 30px; height: 30px; display: grid; place-items: center; color: #c45151; border: 1px solid rgba(196,81,81,.28); border-radius: 7px; background: rgba(196,81,81,.07); }
 .access-delete:hover { color: #fff; background: #b64343; }
 .protected-access { color: #a77b2d; font-size: 9px; font-weight: 800; white-space: nowrap; }
+
+/* Método de pagamento selecionado */
+.method-grid button.method-active,
+.method-grid button.method-active:hover,
+.method-grid button.method-active:focus-visible { color: #6b4308 !important; background: linear-gradient(145deg, #ffe7a0, #f3c75f) !important; border: 2px solid #b87919 !important; box-shadow: 0 0 0 3px rgba(213, 151, 45, .22), 0 5px 14px rgba(160, 107, 24, .18) !important; transform: translateY(-1px); }
+.method-grid button.method-active svg { color: #7b4b08 !important; }
+.method-selected-label { color: #7b4b08 !important; font-size: 8px !important; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; }

@@ -520,16 +520,6 @@ var categoriesSeed = [
   "Petiscos",
   "Outros"
 ];
-var productsSeed = [
-  { name: "Heineken Long Neck", code: "HEI-330", category: "Cervejas", cost: 850, price: 1500, stock: 48, minimum: 12 },
-  { name: "Budweiser Long Neck", code: "BUD-330", category: "Cervejas", cost: 650, price: 1200, stock: 36, minimum: 10 },
-  { name: "Red Bull", code: "RED-250", category: "Energ\xE9ticos", cost: 900, price: 1800, stock: 17, minimum: 12 },
-  { name: "Coca-Cola Lata", code: "COCA-350", category: "Refrigerantes", cost: 380, price: 700, stock: 62, minimum: 15 },
-  { name: "Narguil\xE9 Premium", code: "NARG-PRM", category: "Narguil\xE9", cost: 1100, price: 4500, stock: 20, minimum: 4 },
-  { name: "Ess\xEAncia Mint Ice", code: "ESS-MINT", category: "Ess\xEAncias", cost: 900, price: 2200, stock: 8, minimum: 10 },
-  { name: "Carv\xE3o C\xFAbico", code: "CARV-1", category: "Carv\xF5es", cost: 450, price: 1200, stock: 28, minimum: 8 },
-  { name: "Por\xE7\xE3o da Casa", code: "PET-001", category: "Petiscos", cost: 1500, price: 3900, stock: 14, minimum: 5 }
-];
 async function ensureInitialData() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
@@ -542,19 +532,6 @@ async function ensureInitialData() {
     set: { active: true }
   });
   await db.insert(settings).values({ id: 1, preventNegativeStock: true, maxTables: 20 }).onConflictDoNothing({ target: settings.id });
-  const categories = await db.select().from(productCategories);
-  const categoryByName = new Map(categories.map((category) => [category.name, category.id]));
-  for (const product of productsSeed) {
-    await db.insert(products).values({
-      name: product.name,
-      code: product.code,
-      categoryId: categoryByName.get(product.category),
-      costCents: product.cost,
-      priceCents: product.price,
-      stockQuantity: product.stock,
-      minimumStock: product.minimum
-    }).onConflictDoUpdate({ target: products.code, set: { code: product.code } });
-  }
 }
 async function getLocalRole(userId, systemRole) {
   const db = await getDb();
@@ -1106,7 +1083,7 @@ async function listProducts(query) {
     minimumStock: products.minimumStock,
     active: products.active,
     notes: products.notes
-  }).from(products).leftJoin(productCategories, eq(products.categoryId, productCategories.id)).where(eq(products.active, true)).orderBy(asc(products.name));
+  }).from(products).leftJoin(productCategories, eq(products.categoryId, productCategories.id)).orderBy(asc(products.name));
   const normalized = query?.trim().toLocaleLowerCase();
   return normalized ? rows.filter((row) => `${row.name} ${row.code} ${row.categoryName ?? ""}`.toLocaleLowerCase().includes(normalized)) : rows;
 }
@@ -1146,6 +1123,15 @@ async function deleteProduct(productId, userId) {
   await db.delete(products).where(eq(products.id, productId));
   await writeAudit(userId, "DELETE_PRODUCT", "product", productId, `Removeu ${product[0].name}`);
   return { success: true, deleted: true };
+}
+async function setProductActive(productId, active, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  const product = await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.id, productId)).limit(1);
+  if (!product[0]) throw new Error("Produto n\xE3o encontrado");
+  await db.update(products).set({ active, updatedAt: /* @__PURE__ */ new Date() }).where(eq(products.id, productId));
+  await writeAudit(userId, active ? "ACTIVATE_PRODUCT" : "DEACTIVATE_PRODUCT", "product", productId, `${active ? "Ativou" : "Desativou"} ${product[0].name}`);
+  return { success: true, active };
 }
 async function adjustStock(input, userId) {
   const db = await getDb();
@@ -1609,6 +1595,10 @@ var appRouter = router({
     deleteProduct: protectedProcedure.input(z2.object({ productId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return deleteProduct(input.productId, ctx.user.id);
+    }),
+    setProductActive: protectedProcedure.input(z2.object({ productId: z2.number().int().positive(), active: z2.boolean() })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return setProductActive(input.productId, input.active, ctx.user.id);
     }),
     adjust: protectedProcedure.input(z2.object({
       productId: z2.number().int().positive(),

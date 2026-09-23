@@ -77,10 +77,6 @@ const categoriesSeed = [
   "Narguilé", "Essências", "Carvões", "Petiscos", "Outros",
 ];
 
-const productsSeed = [
-  { name: "Heineken Long Neck", code: "HEI-330", category: "Cervejas", cost: 850, price: 1500, stock: 48, minimum: 12 },
-];
-
 export async function ensureInitialData() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
@@ -96,19 +92,6 @@ export async function ensureInitialData() {
   await db.insert(settings).values({ id: 1, preventNegativeStock: true, maxTables: 20 }).onConflictDoNothing({ target: settings.id });
 
 
-  const categories = await db.select().from(productCategories);
-  const categoryByName = new Map(categories.map((category) => [category.name, category.id]));
-  for (const product of productsSeed) {
-    await db.insert(products).values({
-      name: product.name,
-      code: product.code,
-      categoryId: categoryByName.get(product.category),
-      costCents: product.cost,
-      priceCents: product.price,
-      stockQuantity: product.stock,
-      minimumStock: product.minimum,
-    }).onConflictDoUpdate({ target: products.code, set: { code: product.code } });
-  }
 }
 
 export async function getLocalRole(userId: number, systemRole: "admin" | "user") {
@@ -719,7 +702,7 @@ export async function listProducts(query?: string) {
     minimumStock: products.minimumStock,
     active: products.active,
     notes: products.notes,
-  }).from(products).leftJoin(productCategories, eq(products.categoryId, productCategories.id)).where(eq(products.active, true)).orderBy(asc(products.name));
+  }).from(products).leftJoin(productCategories, eq(products.categoryId, productCategories.id)).orderBy(asc(products.name));
   const normalized = query?.trim().toLocaleLowerCase();
   return normalized ? rows.filter((row) => `${row.name} ${row.code} ${row.categoryName ?? ""}`.toLocaleLowerCase().includes(normalized)) : rows;
 }
@@ -762,6 +745,16 @@ export async function deleteProduct(productId: number, userId: number) {
   await db.delete(products).where(eq(products.id, productId));
   await writeAudit(userId, "DELETE_PRODUCT", "product", productId, `Removeu ${product[0].name}`);
   return { success: true, deleted: true };
+}
+
+export async function setProductActive(productId: number, active: boolean, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const product = await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.id, productId)).limit(1);
+  if (!product[0]) throw new Error("Produto não encontrado");
+  await db.update(products).set({ active, updatedAt: new Date() }).where(eq(products.id, productId));
+  await writeAudit(userId, active ? "ACTIVATE_PRODUCT" : "DEACTIVATE_PRODUCT", "product", productId, `${active ? "Ativou" : "Desativou"} ${product[0].name}`);
+  return { success: true, active };
 }
 
 export async function adjustStock(input: { productId: number; quantity: number; direction: "in" | "out"; reason: string }, userId: number) {

@@ -1,0 +1,11 @@
+import { sql } from "drizzle-orm";
+import { getDb, ensureInitialData } from "../server/db.ts";
+const db = await getDb();
+if (!db) throw new Error("Banco indisponível");
+await db.execute(sql`DELETE FROM product_price_rules`);
+await db.execute(sql`DELETE FROM tab_items`);
+await db.execute(sql`DELETE FROM stock_movements`);
+await db.execute(sql`DELETE FROM products`);
+console.log("before", (await db.execute(sql`SELECT COUNT(*)::int AS count FROM products`)).rows);
+await ensureInitialData();
+console.log("after", (await db.execute(sql`SELECT COUNT(*)::int AS count FROM products`)).rows);
