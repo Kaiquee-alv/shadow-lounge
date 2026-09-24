@@ -443,3 +443,9 @@ h3 { font-size: 17px; font-weight: 700; }
 .method-grid button.method-active:focus-visible { color: #6b4308 !important; background: linear-gradient(145deg, #ffe7a0, #f3c75f) !important; border: 2px solid #b87919 !important; box-shadow: 0 0 0 3px rgba(213, 151, 45, .22), 0 5px 14px rgba(160, 107, 24, .18) !important; transform: translateY(-1px); }
 .method-grid button.method-active svg { color: #7b4b08 !important; }
 .method-selected-label { color: #7b4b08 !important; font-size: 8px !important; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; }
+
+.order-item-product-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.order-item-product-head strong { min-width: 0; overflow-wrap: anywhere; }
+.item-print-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 26px; height: 26px; padding: 0; color: var(--gold-strong); background: var(--gold-soft); border: 1px solid #efd7a4; border-radius: 7px; cursor: pointer; }
+.item-print-button:hover { background: #f5e4bd; }
+.item-print-button:disabled { opacity: .5; cursor: not-allowed; }
