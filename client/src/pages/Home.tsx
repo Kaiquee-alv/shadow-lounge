@@ -155,10 +155,7 @@ export default function Home() {
       setNoteOpen(false); setPendingProduct(null); setItemNote("");
       return { previousTab };
     },
-    onSuccess: async (_result, variables) => {
-      const refreshedTab = await utils.lounge.tab.fetch({ tabId: variables.tabId });
-      const launchedItem = refreshedTab?.items.find((item: any) => item.productId === variables.productId);
-      if (refreshedTab && launchedItem) setBaristaPrintOrder({ tab: refreshedTab, item: { ...launchedItem, quantity: variables.quantity, note: variables.note ?? launchedItem.note } });
+    onSuccess: () => {
       void utils.lounge.tab.invalidate(undefined, { refetchType: "active" });
       void utils.inventory.products.invalidate(undefined, { refetchType: "active" });
       setLaunchingProductId(null);
