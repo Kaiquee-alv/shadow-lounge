@@ -708,14 +708,28 @@ function tabTotals(items, tab) {
   const tipCents = tab.tipCents ?? Math.round(subtotalCents * (tab.tipPercent ?? 0) / 100);
   return { subtotalCents, discountCents, tipCents, totalCents: subtotalCents + tipCents };
 }
+function parseTime(value) {
+  const match = /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(value);
+  if (!match) return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
 function timeInWindow(currentMinutes, startTime, endTime) {
-  const toMinutes = (value) => {
-    const [hours, minutes] = value.split(":").map(Number);
-    return hours * 60 + minutes;
-  };
-  const start = toMinutes(startTime);
-  const end = toMinutes(endTime);
-  return start <= end ? currentMinutes >= start && currentMinutes <= end : currentMinutes >= start || currentMinutes <= end;
+  const start = parseTime(startTime);
+  const end = parseTime(endTime);
+  if (start === null || end === null || start === end) return false;
+  return start < end ? currentMinutes >= start && currentMinutes < end : currentMinutes >= start || currentMinutes < end;
+}
+function currentSaoPauloMinutes(date = /* @__PURE__ */ new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+  const hours = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minutes = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+  return (hours === 24 ? 0 : hours) * 60 + minutes;
 }
 async function listTables() {
   await ensureInitialData();
@@ -925,8 +939,7 @@ async function addTabItem(input, userId, localRole2) {
     if (!product[0] || !product[0].active) throw new Error("Produto indispon\xEDvel");
     const systemSettings = await tx.select().from(settings).limit(1);
     if (systemSettings[0]?.preventNegativeStock && product[0].stockQuantity < input.quantity) throw new Error("Estoque insuficiente para este lan\xE7amento");
-    const now = /* @__PURE__ */ new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const currentMinutes = currentSaoPauloMinutes();
     const scheduledRules = await tx.select().from(productPriceRules).where(and(eq(productPriceRules.productId, input.productId), eq(productPriceRules.active, true)));
     const scheduledRule = scheduledRules.find((rule) => timeInWindow(currentMinutes, rule.startTime, rule.endTime));
     const scheduledPriceCents = scheduledRule?.priceCents ?? product[0].priceCents;
@@ -1333,6 +1346,9 @@ async function listProductPriceRules() {
 async function createProductPriceRule(input, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  if (parseTime(input.startTime) === null || parseTime(input.endTime) === null || parseTime(input.startTime) === parseTime(input.endTime)) {
+    throw new Error("Informe hor\xE1rios v\xE1lidos e diferentes para in\xEDcio e fim");
+  }
   const product = await db.select().from(products).where(eq(products.id, input.productId)).limit(1);
   if (!product[0]) throw new Error("Produto n\xE3o encontrado");
   const inserted = await db.insert(productPriceRules).values({ ...input, active: true, createdBy: userId }).returning({ id: productPriceRules.id });
@@ -1406,6 +1422,9 @@ async function updateNegativeStockPolicy(preventNegativeStock, userId) {
 async function updateCommercialSettings(input, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  if (parseTime(input.happyHourStart) === null || parseTime(input.happyHourEnd) === null || parseTime(input.happyHourStart) === parseTime(input.happyHourEnd)) {
+    throw new Error("Informe hor\xE1rios v\xE1lidos e diferentes para o Happy Hour");
+  }
   await db.insert(settings).values({
     id: 1,
     happyHourEnabled: input.happyHourEnabled,
