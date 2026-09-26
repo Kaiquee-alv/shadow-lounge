@@ -293,7 +293,9 @@ function centsOf(items: Array<{ quantity: number; unitPriceCents: number }>) {
 function tabTotals(items: Array<{ quantity: number; unitPriceCents: number }>, tab: { tipPercent?: number; tipCents?: number }) {
   const subtotalCents = centsOf(items);
   const discountCents = 0;
-  const tipCents = tab.tipCents ?? Math.round(subtotalCents * (tab.tipPercent ?? 0) / 100);
+  // tipCents é um valor derivado: sempre recalcular com base nos itens atuais.
+  // Isso evita manter gorjeta residual após a remoção do último item da comanda.
+  const tipCents = Math.round(subtotalCents * (tab.tipPercent ?? 0) / 100);
   return { subtotalCents, discountCents, tipCents, totalCents: subtotalCents + tipCents };
 }
 
@@ -604,7 +606,9 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
       });
     }
     await tx.insert(stockMovements).values({ productId: input.productId, quantity: input.quantity, direction: "out", reason: "Venda em comanda", referenceType: "tab", referenceId: input.tabId, createdBy: userId });
-    await tx.update(tabs).set({ version: sql`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
+    const currentItems = await tx.select({ quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents }).from(tabItems).where(eq(tabItems.tabId, input.tabId));
+    const currentTotals = tabTotals(currentItems, tab[0]);
+    await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
     await tx.insert(auditLogs).values({ userId, action: "ADD_ITEM", entityType: "tab", entityId: input.tabId, description: `Adicionou ${input.quantity}x ${product[0].name}` });
   });
 }
@@ -642,7 +646,9 @@ export async function setTabItemQuantity(input: { itemId: number; quantity: numb
         createdBy: userId,
       });
     }
-    await tx.update(tabs).set({ version: sql`${tabs.version} + 1` }).where(eq(tabs.id, item[0].tabId));
+    const currentItems = await tx.select({ quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents }).from(tabItems).where(eq(tabItems.tabId, item[0].tabId));
+    const currentTotals = tabTotals(currentItems, tab[0]);
+    await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, item[0].tabId));
     await tx.insert(auditLogs).values({ userId, action: input.quantity === 0 ? "REMOVE_ITEM" : "UPDATE_ITEM", entityType: "tab", entityId: item[0].tabId, description: `Atualizou ${item[0].productName}` });
   });
 }

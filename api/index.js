@@ -705,7 +705,7 @@ function centsOf(items) {
 function tabTotals(items, tab) {
   const subtotalCents = centsOf(items);
   const discountCents = 0;
-  const tipCents = tab.tipCents ?? Math.round(subtotalCents * (tab.tipPercent ?? 0) / 100);
+  const tipCents = Math.round(subtotalCents * (tab.tipPercent ?? 0) / 100);
   return { subtotalCents, discountCents, tipCents, totalCents: subtotalCents + tipCents };
 }
 function parseTime(value) {
@@ -982,7 +982,9 @@ async function addTabItem(input, userId, localRole2) {
       });
     }
     await tx.insert(stockMovements).values({ productId: input.productId, quantity: input.quantity, direction: "out", reason: "Venda em comanda", referenceType: "tab", referenceId: input.tabId, createdBy: userId });
-    await tx.update(tabs).set({ version: sql`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
+    const currentItems = await tx.select({ quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents }).from(tabItems).where(eq(tabItems.tabId, input.tabId));
+    const currentTotals = tabTotals(currentItems, tab[0]);
+    await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
     await tx.insert(auditLogs).values({ userId, action: "ADD_ITEM", entityType: "tab", entityId: input.tabId, description: `Adicionou ${input.quantity}x ${product[0].name}` });
   });
 }
@@ -1018,7 +1020,9 @@ async function setTabItemQuantity(input, userId) {
         createdBy: userId
       });
     }
-    await tx.update(tabs).set({ version: sql`${tabs.version} + 1` }).where(eq(tabs.id, item[0].tabId));
+    const currentItems = await tx.select({ quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents }).from(tabItems).where(eq(tabItems.tabId, item[0].tabId));
+    const currentTotals = tabTotals(currentItems, tab[0]);
+    await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, item[0].tabId));
     await tx.insert(auditLogs).values({ userId, action: input.quantity === 0 ? "REMOVE_ITEM" : "UPDATE_ITEM", entityType: "tab", entityId: item[0].tabId, description: `Atualizou ${item[0].productName}` });
   });
 }
