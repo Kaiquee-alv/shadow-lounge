@@ -85,6 +85,9 @@ export async function ensureInitialData() {
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
+  // Permite linhas separadas para o mesmo produto quando uma delas usa uma promoção.
+  await db.execute(sql`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index) => ({ number: index + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({ target: productCategories.name,
     set: { active: true },
@@ -579,17 +582,18 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
       ? `Happy Hour${scheduledRule ? ` + ${scheduledRule.name}` : ""}`
       : scheduledRule?.name ?? null;
     await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${input.quantity}` }).where(eq(products.id, input.productId));
-    const existing = await tx.select().from(tabItems).where(and(eq(tabItems.tabId, input.tabId), eq(tabItems.productId, input.productId))).limit(1);
-    if (existing[0]) {
+    const matchingItems = await tx.select().from(tabItems).where(and(eq(tabItems.tabId, input.tabId), eq(tabItems.productId, input.productId)));
+    const existing = matchingItems.find((item) => item.unitPriceCents === unitPriceCents && item.discountReason === discountReason);
+    if (existing) {
       await tx.update(tabItems).set({
         quantity: sql`${tabItems.quantity} + ${input.quantity}`,
         unitPriceCents,
         discountPercent,
         discountReason,
-        note: input.note ?? existing[0].note,
+        note: input.note ?? existing.note,
         addedBy: userId,
         updatedAt: new Date(),
-      }).where(eq(tabItems.id, existing[0].id));
+      }).where(eq(tabItems.id, existing.id));
     } else {
       await tx.insert(tabItems).values({
         tabId: input.tabId,

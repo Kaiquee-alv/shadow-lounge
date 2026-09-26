@@ -385,8 +385,8 @@ var tabItems = pgTable(
     updatedAt: timestamp("updatedAt").defaultNow().notNull()
   },
   (table) => [
-    uniqueIndex("tab_items_tab_product_unique").on(table.tabId, table.productId),
-    index("tab_items_tab_idx").on(table.tabId)
+    index("tab_items_tab_idx").on(table.tabId),
+    index("tab_items_tab_product_idx").on(table.tabId, table.productId)
   ]
 );
 var payments = pgTable(
@@ -526,6 +526,8 @@ async function ensureInitialData() {
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
+  await db.execute(sql`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index2) => ({ number: index2 + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({
     target: productCategories.name,
@@ -955,17 +957,18 @@ async function addTabItem(input, userId, localRole2) {
     const unitPriceCents = Math.round(scheduledPriceCents * (100 - discountPercent) / 100);
     const discountReason = happyHourActive ? `Happy Hour${scheduledRule ? ` + ${scheduledRule.name}` : ""}` : scheduledRule?.name ?? null;
     await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${input.quantity}` }).where(eq(products.id, input.productId));
-    const existing = await tx.select().from(tabItems).where(and(eq(tabItems.tabId, input.tabId), eq(tabItems.productId, input.productId))).limit(1);
-    if (existing[0]) {
+    const matchingItems = await tx.select().from(tabItems).where(and(eq(tabItems.tabId, input.tabId), eq(tabItems.productId, input.productId)));
+    const existing = matchingItems.find((item) => item.unitPriceCents === unitPriceCents && item.discountReason === discountReason);
+    if (existing) {
       await tx.update(tabItems).set({
         quantity: sql`${tabItems.quantity} + ${input.quantity}`,
         unitPriceCents,
         discountPercent,
         discountReason,
-        note: input.note ?? existing[0].note,
+        note: input.note ?? existing.note,
         addedBy: userId,
         updatedAt: /* @__PURE__ */ new Date()
-      }).where(eq(tabItems.id, existing[0].id));
+      }).where(eq(tabItems.id, existing.id));
     } else {
       await tx.insert(tabItems).values({
         tabId: input.tabId,

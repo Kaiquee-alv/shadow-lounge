@@ -185,8 +185,8 @@ export const tabItems = pgTable(
     updatedAt: timestamp("updatedAt").defaultNow().notNull(),
   },
   (table) => [
-    uniqueIndex("tab_items_tab_product_unique").on(table.tabId, table.productId),
     index("tab_items_tab_idx").on(table.tabId),
+    index("tab_items_tab_product_idx").on(table.tabId, table.productId),
   ],
 );
 
