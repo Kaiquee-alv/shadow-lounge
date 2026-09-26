@@ -440,7 +440,7 @@ export async function setTabCustomerName(tabId: number, customerName: string | n
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
-    await tx.update(tabs).set({ customerName: normalizedName, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.update(tabs).set({ customerName: normalizedName, customerId: null, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
     await tx.insert(auditLogs).values({
       userId,
       action: "UPDATE_TAB_CUSTOMER",
@@ -981,34 +981,75 @@ export async function listProductHistory(productId?: number, from?: Date, to?: D
 export async function getReportSummary(from?: Date, to?: Date) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
-  const paymentFilters = [from ? gte(payments.createdAt, from) : undefined, to ? lte(payments.createdAt, to) : undefined].filter(Boolean);
-  const productFilters = [from ? gte(tabItems.createdAt, from) : undefined, to ? lte(tabItems.createdAt, to) : undefined].filter(Boolean);
+  const closedTabFilters = [eq(tabs.status, "closed"), from ? gte(tabs.closedAt, from) : undefined, to ? lte(tabs.closedAt, to) : undefined].filter(Boolean);
   const expenseFilters = [from ? gte(expenses.occurredAt, from) : undefined, to ? lte(expenses.occurredAt, to) : undefined].filter(Boolean);
-  const auditFilters = [eq(auditLogs.entityType, "tab"), inArray(auditLogs.action, ["ADD_ITEM", "UPDATE_ITEM", "REMOVE_ITEM"]), from ? gte(auditLogs.createdAt, from) : undefined, to ? lte(auditLogs.createdAt, to) : undefined].filter(Boolean);
-  const [paymentRows, productRows, expenseRows, launchRows] = await Promise.all([
-    db.select({ amountCents: payments.amountCents, method: payments.method, tabId: payments.tabId }).from(payments).where(paymentFilters.length ? and(...paymentFilters) : undefined),
-    db.select({ productName: tabItems.productName, quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents, unitCostCents: tabItems.unitCostCents }).from(tabItems).where(productFilters.length ? and(...productFilters) : undefined),
+  const paymentFilters = [from ? gte(payments.createdAt, from) : undefined, to ? lte(payments.createdAt, to) : undefined].filter(Boolean);
+  const [closedTabs, expenseRows] = await Promise.all([
+    db.select({ id: tabs.id, tabCode: tabs.tabCode, customerName: tabs.customerName, closedAt: tabs.closedAt, tipCents: tabs.tipCents, discountCents: tabs.discountCents, tableNumber: loungeTables.number })
+      .from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).where(and(...closedTabFilters)).orderBy(desc(tabs.closedAt)),
     db.select({ amountCents: expenses.amountCents }).from(expenses).where(expenseFilters.length ? and(...expenseFilters) : undefined),
-    db.select({ id: auditLogs.id, action: auditLogs.action, description: auditLogs.description, createdAt: auditLogs.createdAt, userName: users.name }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).where(and(...auditFilters)).orderBy(desc(auditLogs.createdAt)).limit(300),
   ]);
+  const tabIds = closedTabs.map((tab) => tab.id);
+  const [salesPaymentRows, productRows, periodPaymentRows] = await Promise.all([
+    tabIds.length ? db.select({ tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method, createdAt: payments.createdAt })
+      .from(payments).where(inArray(payments.tabId, tabIds)).orderBy(asc(payments.createdAt)) : Promise.resolve([]),
+    tabIds.length ? db.select({ id: tabItems.id, tabId: tabItems.tabId, productName: tabItems.productName, quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents, unitCostCents: tabItems.unitCostCents })
+      .from(tabItems).where(inArray(tabItems.tabId, tabIds)).orderBy(asc(tabItems.id)) : Promise.resolve([]),
+    db.select({ tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method, createdAt: payments.createdAt, tabCode: tabs.tabCode, tabStatus: tabs.status, tableNumber: loungeTables.number })
+      .from(payments).innerJoin(tabs, eq(payments.tabId, tabs.id)).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id))
+      .where(paymentFilters.length ? and(...paymentFilters) : undefined).orderBy(desc(payments.createdAt)),
+  ]);
+
   const productsMap = new Map<string, { productName: string; quantity: number; totalCents: number }>();
-  for (const row of productRows) {
-    const current = productsMap.get(row.productName) ?? { productName: row.productName, quantity: 0, totalCents: 0 };
-    current.quantity += row.quantity;
-    current.totalCents += row.quantity * row.unitPriceCents;
-    productsMap.set(row.productName, current);
+  const itemsByTab = new Map<number, typeof productRows>();
+  for (const item of productRows) {
+    const items = itemsByTab.get(item.tabId) ?? [];
+    items.push(item);
+    itemsByTab.set(item.tabId, items);
+    const current = productsMap.get(item.productName) ?? { productName: item.productName, quantity: 0, totalCents: 0 };
+    current.quantity += item.quantity;
+    current.totalCents += item.quantity * item.unitPriceCents;
+    productsMap.set(item.productName, current);
   }
+  const paymentsByTab = new Map<number, typeof salesPaymentRows>();
   const paymentMap = new Map<string, { method: string; totalCents: number; count: number }>();
-  for (const row of paymentRows) {
-    const current = paymentMap.get(row.method) ?? { method: row.method, totalCents: 0, count: 0 };
-    current.totalCents += row.amountCents;
-    current.count += 1;
-    paymentMap.set(row.method, current);
+  for (const payment of salesPaymentRows) {
+    const paymentsForTab = paymentsByTab.get(payment.tabId) ?? [];
+    paymentsForTab.push(payment);
+    paymentsByTab.set(payment.tabId, paymentsForTab);
   }
-  const salesCents = paymentRows.reduce((sum, row) => sum + row.amountCents, 0);
-  const costCents = productRows.reduce((sum, row) => sum + row.quantity * row.unitCostCents, 0);
-  const expensesCents = expenseRows.reduce((sum, row) => sum + row.amountCents, 0);
-  return { salesCents, salesCount: new Set(paymentRows.map((row) => row.tabId)).size, productUnits: productRows.reduce((sum, row) => sum + row.quantity, 0), costCents, expensesCents, resultCents: salesCents - expensesCents - costCents, paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents), products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity), launches: launchRows };
+  for (const payment of periodPaymentRows) {
+    const current = paymentMap.get(payment.method) ?? { method: payment.method, totalCents: 0, count: 0 };
+    current.totalCents += payment.amountCents;
+    current.count += 1;
+    paymentMap.set(payment.method, current);
+  }
+  const sales = closedTabs.map((tab) => {
+    const items = itemsByTab.get(tab.id) ?? [];
+    const paymentsForTab = paymentsByTab.get(tab.id) ?? [];
+    const subtotalCents = items.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
+    const salesCents = Math.max(0, subtotalCents + tab.tipCents - tab.discountCents);
+    const receivedCents = paymentsForTab.reduce((sum, payment) => sum + payment.amountCents, 0);
+    return {
+      id: tab.id, tabCode: tab.tabCode, tableNumber: tab.tableNumber, customerName: tab.customerName,
+      closedAt: tab.closedAt, subtotalCents, tipCents: tab.tipCents, discountCents: tab.discountCents,
+      salesCents, receivedCents, balanceCents: Math.max(0, salesCents - receivedCents),
+      items: items.map(({ id, productName, quantity, unitPriceCents, unitCostCents }) => ({ id, productName, quantity, unitPriceCents, totalCents: quantity * unitPriceCents, costCents: quantity * unitCostCents })),
+      payments: paymentsForTab.map(({ amountCents, method, createdAt }) => ({ amountCents, method, createdAt })),
+    };
+  });
+  const salesCents = sales.reduce((sum, tab) => sum + tab.salesCents, 0);
+  const receivedCents = periodPaymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
+  const costCents = productRows.reduce((sum, item) => sum + item.quantity * item.unitCostCents, 0);
+  const expensesCents = expenseRows.reduce((sum, expense) => sum + expense.amountCents, 0);
+  return {
+    salesCents, receivedCents, outstandingCents: sales.reduce((sum, tab) => sum + tab.balanceCents, 0),
+    salesCount: sales.length, productUnits: productRows.reduce((sum, item) => sum + item.quantity, 0),
+    costCents, expensesCents, resultCents: salesCents - expensesCents - costCents,
+    paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents),
+    products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity), sales,
+    receipts: periodPaymentRows.map(({ tabId, amountCents, method, createdAt, tabCode, tabStatus, tableNumber }) => ({ tabId, amountCents, method, createdAt, tabCode, tabStatus, tableNumber })),
+  };
 }
 
 export async function listUserAccess() {
