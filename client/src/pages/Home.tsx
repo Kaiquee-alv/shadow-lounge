@@ -567,7 +567,20 @@ function FinancePage({ dashboard, expenses, onNewExpense }: any) {
 }
 
 function ReportsPage({ summary, from, to, setFrom, setTo, loading, error, onRefresh }: any) {
-  const data = summary ?? { salesCents: 0, receivedCents: 0, outstandingCents: 0, salesCount: 0, productUnits: 0, costCents: 0, expensesCents: 0, resultCents: 0, paymentMethods: [], products: [], sales: [], receipts: [] };
+  const data = {
+    salesCents: summary?.salesCents ?? 0,
+    receivedCents: summary?.receivedCents ?? 0,
+    outstandingCents: summary?.outstandingCents ?? 0,
+    salesCount: summary?.salesCount ?? 0,
+    productUnits: summary?.productUnits ?? 0,
+    costCents: summary?.costCents ?? 0,
+    expensesCents: summary?.expensesCents ?? 0,
+    resultCents: summary?.resultCents ?? 0,
+    paymentMethods: Array.isArray(summary?.paymentMethods) ? summary.paymentMethods : [],
+    products: Array.isArray(summary?.products) ? summary.products : [],
+    sales: Array.isArray(summary?.sales) ? summary.sales : [],
+    receipts: Array.isArray(summary?.receipts) ? summary.receipts : [],
+  };
   const validRange = !from || !to || from <= to;
   const applyPreset = (preset: "today" | "7days" | "month") => {
     const now = new Date();
