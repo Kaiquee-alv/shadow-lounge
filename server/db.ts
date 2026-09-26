@@ -1126,6 +1126,34 @@ export async function createProductPriceRule(input: { productId: number; name: s
   return { id };
 }
 
+export async function updateProductPriceRule(input: { ruleId: number; productId: number; name: string; startTime: string; endTime: string; daysOfWeek: number[]; priceCents: number }, userId: number) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  if (parseTime(input.startTime) === null || parseTime(input.endTime) === null || parseTime(input.startTime) === parseTime(input.endTime)) {
+    throw new Error("Informe horários válidos e diferentes para início e fim");
+  }
+  const daysOfWeek = Array.from(new Set(input.daysOfWeek)).sort((a, b) => a - b);
+  if (!daysOfWeek.length || daysOfWeek.some((day) => !Number.isInteger(day) || day < 0 || day > 6)) throw new Error("Selecione ao menos um dia válido para a promoção");
+  const product = await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.id, input.productId)).limit(1);
+  if (!product[0]) throw new Error("Produto não encontrado");
+  const rule = await db.select({ id: productPriceRules.id }).from(productPriceRules).where(eq(productPriceRules.id, input.ruleId)).limit(1);
+  if (!rule[0]) throw new Error("Regra de preço não encontrada");
+  const result = await db.update(productPriceRules).set({
+    productId: input.productId,
+    name: input.name.trim(),
+    startTime: input.startTime,
+    endTime: input.endTime,
+    daysOfWeek,
+    priceCents: input.priceCents,
+  }).where(eq(productPriceRules.id, input.ruleId));
+  const affected = (result as unknown as { rowCount: number }).rowCount ?? 0;
+  if (affected !== 1) throw new Error("Regra de preço não encontrada");
+  const dayNames = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+  await writeAudit(userId, "UPDATE_PRICE_RULE", "product_price_rule", input.ruleId, `Editou o preço programado de ${product[0].name}: ${input.startTime}-${input.endTime} (${daysOfWeek.map((day) => dayNames[day]).join(", ")}) por R$ ${(input.priceCents / 100).toFixed(2).replace(".", ",")}`);
+  return { success: true };
+}
+
 export async function setProductPriceRuleActive(ruleId: number, active: boolean, userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
