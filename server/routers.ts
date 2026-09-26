@@ -43,10 +43,6 @@ import {
   createLocalUser,
   deleteLocalUser,
   getCommercialSettings,
-  getOpenCashRegister,
-  openCashRegister,
-  closeCashRegister,
-  listCashRegisters,
   updateNegativeStockPolicy,
   updateCommercialSettings,
   updateTableLimit,
@@ -230,22 +226,6 @@ export const appRouter = router({
     }),
   }),
   finance: router({
-    openCash: protectedProcedure.input(z.object({ openingBalanceCents: z.number().int().min(0).max(100000000) })).mutation(async ({ ctx, input }) => {
-      await operator(ctx);
-      return openCashRegister(input.openingBalanceCents, ctx.user.id);
-    }),
-    closeCash: protectedProcedure.input(z.object({ closingBalanceCents: z.number().int().min(0).max(100000000) })).mutation(async ({ ctx, input }) => {
-      await operator(ctx);
-      return closeCashRegister(input.closingBalanceCents, ctx.user.id);
-    }),
-    currentCash: protectedProcedure.query(async ({ ctx }) => {
-      await operator(ctx);
-      return getOpenCashRegister();
-    }),
-    cashHistory: protectedProcedure.input(z.object({ from: z.date().optional(), to: z.date().optional() }).optional()).query(async ({ ctx, input }) => {
-      await requireRole(ctx, ["administrator", "manager"]);
-      return listCashRegisters(input?.from, input?.to);
-    }),
     expenses: protectedProcedure.query(async ({ ctx }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return listExpenses();

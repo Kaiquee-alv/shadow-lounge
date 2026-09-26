@@ -208,20 +208,6 @@ export const payments = pgTable(
   ],
 );
 
-export const cashRegisters = pgTable(
-  "cash_registers",
-  {
-    id: serial("id").primaryKey(),
-    openedAt: timestamp("openedAt").defaultNow().notNull(),
-    closedAt: timestamp("closedAt"),
-    openingBalanceCents: integer("openingBalanceCents").default(0).notNull(),
-    closingBalanceCents: integer("closingBalanceCents"),
-    openedBy: integer("openedBy").notNull().references(() => users.id),
-    closedBy: integer("closedBy").references(() => users.id),
-  },
-  (table) => [index("cash_registers_opened_at_idx").on(table.openedAt), index("cash_registers_closed_at_idx").on(table.closedAt)],
-);
-
 export const stockMovements = pgTable(
   "stock_movements",
   {
