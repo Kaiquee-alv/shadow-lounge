@@ -406,6 +406,19 @@ var payments = pgTable(
     index("payments_created_idx").on(table.createdAt)
   ]
 );
+var cashRegisters = pgTable(
+  "cash_registers",
+  {
+    id: serial("id").primaryKey(),
+    openedAt: timestamp("openedAt").defaultNow().notNull(),
+    closedAt: timestamp("closedAt"),
+    openingBalanceCents: integer("openingBalanceCents").default(0).notNull(),
+    closingBalanceCents: integer("closingBalanceCents"),
+    openedBy: integer("openedBy").notNull().references(() => users.id),
+    closedBy: integer("closedBy").references(() => users.id)
+  },
+  (table) => [index("cash_registers_opened_at_idx").on(table.openedAt), index("cash_registers_closed_at_idx").on(table.closedAt)]
+);
 var stockMovements = pgTable(
   "stock_movements",
   {
@@ -526,6 +539,10 @@ async function ensureInitialData() {
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "cash_registers" ("id" serial PRIMARY KEY, "openedAt" timestamp NOT NULL DEFAULT now(), "closedAt" timestamp, "openingBalanceCents" integer NOT NULL DEFAULT 0, "closingBalanceCents" integer, "openedBy" integer NOT NULL REFERENCES "users"("id"), "closedBy" integer REFERENCES "users"("id"))`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "cash_registers_opened_at_idx" ON "cash_registers" ("openedAt")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "cash_registers_closed_at_idx" ON "cash_registers" ("closedAt")`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "cash_registers_single_open_idx" ON "cash_registers" ((1)) WHERE "closedAt" IS NULL`);
   await db.execute(sql`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index2) => ({ number: index2 + 1 }))).onConflictDoNothing({ target: loungeTables.number });
@@ -1310,7 +1327,46 @@ async function getReportSummary(from, to) {
   const salesCents = paymentRows.reduce((sum, row) => sum + row.amountCents, 0);
   const costCents = productRows.reduce((sum, row) => sum + row.quantity * row.unitCostCents, 0);
   const expensesCents = expenseRows.reduce((sum, row) => sum + row.amountCents, 0);
-  return { salesCents, salesCount: new Set(paymentRows.map((row) => row.tabId)).size, productUnits: productRows.reduce((sum, row) => sum + row.quantity, 0), costCents, expensesCents, resultCents: salesCents - expensesCents - costCents, paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents), products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity), launches: launchRows };
+  const cashFilter = [from ? gte(cashRegisters.openedAt, from) : void 0, to ? lte(cashRegisters.openedAt, to) : void 0].filter(Boolean);
+  const cashRows = await db.select({ id: cashRegisters.id, openedAt: cashRegisters.openedAt, closedAt: cashRegisters.closedAt, openingBalanceCents: cashRegisters.openingBalanceCents, closingBalanceCents: cashRegisters.closingBalanceCents, openedByName: users.name }).from(cashRegisters).leftJoin(users, eq(cashRegisters.openedBy, users.id)).where(cashFilter.length ? and(...cashFilter) : void 0).orderBy(desc(cashRegisters.openedAt));
+  return { salesCents, salesCount: new Set(paymentRows.map((row) => row.tabId)).size, productUnits: productRows.reduce((sum, row) => sum + row.quantity, 0), costCents, expensesCents, resultCents: salesCents - expensesCents - costCents, paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents), products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity), launches: launchRows, cashRegisters: cashRows };
+}
+async function getOpenCashRegister() {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  await ensureInitialData();
+  const rows = await db.select({ id: cashRegisters.id, openedAt: cashRegisters.openedAt, openingBalanceCents: cashRegisters.openingBalanceCents, openedBy: cashRegisters.openedBy, openedByName: users.name }).from(cashRegisters).leftJoin(users, eq(cashRegisters.openedBy, users.id)).where(sql`${cashRegisters.closedAt} IS NULL`).orderBy(desc(cashRegisters.openedAt)).limit(1);
+  return rows[0] ?? null;
+}
+async function openCashRegister(openingBalanceCents, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  await ensureInitialData();
+  return db.transaction(async (tx) => {
+    const current = await tx.select({ id: cashRegisters.id }).from(cashRegisters).where(sql`${cashRegisters.closedAt} IS NULL`).limit(1);
+    if (current[0]) throw new Error("J\xE1 existe um caixa aberto");
+    const inserted = await tx.insert(cashRegisters).values({ openingBalanceCents, openedBy: userId }).returning({ id: cashRegisters.id });
+    await tx.insert(auditLogs).values({ userId, action: "OPEN_CASH_REGISTER", entityType: "cash_register", entityId: inserted[0].id, description: `Abriu o caixa com R$ ${(openingBalanceCents / 100).toFixed(2)}` });
+    return getOpenCashRegister();
+  });
+}
+async function closeCashRegister(closingBalanceCents, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  return db.transaction(async (tx) => {
+    const current = await tx.select().from(cashRegisters).where(sql`${cashRegisters.closedAt} IS NULL`).orderBy(desc(cashRegisters.openedAt)).limit(1);
+    if (!current[0]) throw new Error("N\xE3o existe caixa aberto");
+    await tx.update(cashRegisters).set({ closedAt: /* @__PURE__ */ new Date(), closedBy: userId, closingBalanceCents }).where(eq(cashRegisters.id, current[0].id));
+    await tx.insert(auditLogs).values({ userId, action: "CLOSE_CASH_REGISTER", entityType: "cash_register", entityId: current[0].id, description: `Fechou o caixa com R$ ${(closingBalanceCents / 100).toFixed(2)}` });
+    return { success: true, id: current[0].id };
+  });
+}
+async function listCashRegisters(from, to) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  await ensureInitialData();
+  const filters = [from ? gte(cashRegisters.openedAt, from) : void 0, to ? lte(cashRegisters.openedAt, to) : void 0].filter(Boolean);
+  return db.select({ id: cashRegisters.id, openedAt: cashRegisters.openedAt, closedAt: cashRegisters.closedAt, openingBalanceCents: cashRegisters.openingBalanceCents, closingBalanceCents: cashRegisters.closingBalanceCents, openedByName: users.name }).from(cashRegisters).leftJoin(users, eq(cashRegisters.openedBy, users.id)).where(filters.length ? and(...filters) : void 0).orderBy(desc(cashRegisters.openedAt));
 }
 async function listUserAccess() {
   const db = await getDb();
@@ -1647,6 +1703,22 @@ var appRouter = router({
     })
   }),
   finance: router({
+    openCash: protectedProcedure.input(z2.object({ openingBalanceCents: z2.number().int().min(0).max(1e8) })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return openCashRegister(input.openingBalanceCents, ctx.user.id);
+    }),
+    closeCash: protectedProcedure.input(z2.object({ closingBalanceCents: z2.number().int().min(0).max(1e8) })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return closeCashRegister(input.closingBalanceCents, ctx.user.id);
+    }),
+    currentCash: protectedProcedure.query(async ({ ctx }) => {
+      await operator(ctx);
+      return getOpenCashRegister();
+    }),
+    cashHistory: protectedProcedure.input(z2.object({ from: z2.date().optional(), to: z2.date().optional() }).optional()).query(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return listCashRegisters(input?.from, input?.to);
+    }),
     expenses: protectedProcedure.query(async ({ ctx }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return listExpenses();
