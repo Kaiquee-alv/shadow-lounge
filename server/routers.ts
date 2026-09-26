@@ -32,6 +32,10 @@ import {
   setTabItemQuantity,
   setTabCharges,
   setTabCustomerName,
+  listCustomers,
+  saveCustomer,
+  deleteCustomer,
+  assignTabCustomer,
   transferTab,
   createProductCategory,
   deleteProduct,
@@ -137,6 +141,10 @@ export const appRouter = router({
     setCustomerName: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), customerName: z.string().trim().max(120).nullable() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);
       return setTabCustomerName(input.tabId, input.customerName, ctx.user.id);
+    }),
+    assignCustomer: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), customerId: z.number().int().positive().nullable() })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return assignTabCustomer(input.tabId, input.customerId, ctx.user.id);
     }),
     openTab: protectedProcedure.input(z.object({ tableId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);
@@ -313,6 +321,11 @@ export const appRouter = router({
       await requireRole(ctx, ["administrator", "manager"]);
       return updateCommercialSettings(input, ctx.user.id);
     }),
+  }),
+  customers: router({
+    list: protectedProcedure.query(async ({ ctx }) => { await operator(ctx); return listCustomers(); }),
+    save: protectedProcedure.input(z.object({ id: z.number().int().positive().optional(), name: z.string().trim().min(2).max(160), cpf: z.string().min(11).max(18), phone: z.string().max(30).optional(), notes: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => { await operator(ctx); return saveCustomer(input, ctx.user.id); }),
+    delete: protectedProcedure.input(z.object({ customerId: z.number().int().positive() })).mutation(async ({ ctx, input }) => { await requireRole(ctx, ["administrator", "manager"]); return deleteCustomer(input.customerId, ctx.user.id); }),
   }),
 });
 

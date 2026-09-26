@@ -341,6 +341,20 @@ var loungeTables = pgTable(
   },
   (table) => [uniqueIndex("lounge_tables_number_unique").on(table.number)]
 );
+var customers = pgTable(
+  "customers",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 160 }).notNull(),
+    cpf: varchar("cpf", { length: 11 }).notNull(),
+    phone: varchar("phone", { length: 30 }),
+    notes: varchar("notes", { length: 500 }),
+    active: boolean("active").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().notNull()
+  },
+  (table) => [uniqueIndex("customers_cpf_unique").on(table.cpf), index("customers_active_idx").on(table.active)]
+);
 var tabs = pgTable(
   "tabs",
   {
@@ -349,6 +363,7 @@ var tabs = pgTable(
     tabCode: varchar("tabCode", { length: 24 }).notNull(),
     offlineKey: varchar("offlineKey", { length: 80 }),
     customerName: varchar("customerName", { length: 120 }),
+    customerId: integer("customerId").references(() => customers.id),
     status: tabStatusEnum("status").default("open").notNull(),
     openedBy: integer("openedBy").notNull().references(() => users.id),
     openedAt: timestamp("openedAt").defaultNow().notNull(),
@@ -524,6 +539,9 @@ async function ensureInitialData() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "customers" ("id" serial PRIMARY KEY, "name" varchar(160) NOT NULL, "cpf" varchar(11) NOT NULL, "phone" varchar(30), "notes" varchar(500), "active" boolean NOT NULL DEFAULT true, "createdAt" timestamp NOT NULL DEFAULT now(), "updatedAt" timestamp NOT NULL DEFAULT now())`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "customers_cpf_unique" ON "customers" ("cpf")`);
+  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerId" integer REFERENCES "customers"("id")`);
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
   await db.execute(sql`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
@@ -775,6 +793,8 @@ async function getTabDetails(tabId) {
     id: tabs.id,
     tabCode: tabs.tabCode,
     customerName: tabs.customerName,
+    customerId: tabs.customerId,
+    customerCpf: customers.cpf,
     status: tabs.status,
     openedAt: tabs.openedAt,
     closedAt: tabs.closedAt,
@@ -785,7 +805,7 @@ async function getTabDetails(tabId) {
     tableNumber: loungeTables.number,
     tableId: loungeTables.id,
     openedByName: users.name
-  }).from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).leftJoin(users, eq(tabs.openedBy, users.id)).where(eq(tabs.id, tabId)).limit(1);
+  }).from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).leftJoin(users, eq(tabs.openedBy, users.id)).leftJoin(customers, eq(tabs.customerId, customers.id)).where(eq(tabs.id, tabId)).limit(1);
   if (!tab[0]) throw new Error("Comanda n\xE3o encontrada");
   const [items, paymentRows, launchHistory] = await Promise.all([
     db.select({
@@ -839,6 +859,50 @@ async function setTabCustomerName(tabId, customerName, userId) {
       description: normalizedName ? `Atribuiu a comanda ${tab[0].tabCode} a ${normalizedName}` : `Removeu o nome da comanda ${tab[0].tabCode}`
     });
     return { tabId, customerName: normalizedName };
+  });
+}
+function normalizeCpf(cpf) {
+  return cpf.replace(/\D/g, "");
+}
+async function listCustomers() {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  await ensureInitialData();
+  return db.select().from(customers).where(eq(customers.active, true)).orderBy(asc(customers.name));
+}
+async function saveCustomer(input, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  const cpf = normalizeCpf(input.cpf);
+  if (cpf.length !== 11) throw new Error("Informe um CPF v\xE1lido com 11 d\xEDgitos");
+  const name = input.name.trim();
+  if (name.length < 2) throw new Error("Informe o nome do cliente");
+  const data = { name, cpf, phone: input.phone?.trim() || null, notes: input.notes?.trim() || null, active: true, updatedAt: /* @__PURE__ */ new Date() };
+  const result = input.id ? await db.update(customers).set(data).where(eq(customers.id, input.id)).returning({ id: customers.id }) : await db.insert(customers).values(data).returning({ id: customers.id });
+  if (!result[0]) throw new Error("Cliente n\xE3o encontrado");
+  await writeAudit(userId, input.id ? "UPDATE_CUSTOMER" : "CREATE_CUSTOMER", "customer", Number(result[0].id), `${input.id ? "Atualizou" : "Cadastrou"} o cliente ${name}`);
+  return { id: Number(result[0].id), success: true };
+}
+async function deleteCustomer(customerId, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  const result = await db.update(customers).set({ active: false, updatedAt: /* @__PURE__ */ new Date() }).where(eq(customers.id, customerId));
+  const affected = result.rowCount ?? 0;
+  if (affected !== 1) throw new Error("Cliente n\xE3o encontrado");
+  await writeAudit(userId, "DEACTIVATE_CUSTOMER", "customer", customerId, "Desativou um cliente");
+  return { success: true };
+}
+async function assignTabCustomer(tabId, customerId, userId) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  return db.transaction(async (tx) => {
+    const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
+    if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
+    const customer = customerId ? await tx.select().from(customers).where(and(eq(customers.id, customerId), eq(customers.active, true))).limit(1) : [];
+    if (customerId && !customer[0]) throw new Error("Cliente n\xE3o encontrado ou inativo");
+    await tx.update(tabs).set({ customerId, customerName: customer[0]?.name ?? null, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.insert(auditLogs).values({ userId, action: "UPDATE_TAB_CUSTOMER", entityType: "tab", entityId: tabId, description: customer[0] ? `Atribuiu ${customer[0].name} (CPF ${customer[0].cpf}) \xE0 comanda ${tab[0].tabCode}` : `Removeu o cliente da comanda ${tab[0].tabCode}` });
+    return { tabId, customerId, customerName: customer[0]?.name ?? null, customerCpf: customer[0]?.cpf ?? null };
   });
 }
 async function openTab(tableId, userId) {
@@ -1540,6 +1604,10 @@ var appRouter = router({
       await operator(ctx);
       return setTabCustomerName(input.tabId, input.customerName, ctx.user.id);
     }),
+    assignCustomer: protectedProcedure.input(z2.object({ tabId: z2.number().int().positive(), customerId: z2.number().int().positive().nullable() })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return assignTabCustomer(input.tabId, input.customerId, ctx.user.id);
+    }),
     openTab: protectedProcedure.input(z2.object({ tableId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);
       return openTab(input.tableId, ctx.user.id);
@@ -1738,6 +1806,20 @@ var appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return updateCommercialSettings(input, ctx.user.id);
+    })
+  }),
+  customers: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      await operator(ctx);
+      return listCustomers();
+    }),
+    save: protectedProcedure.input(z2.object({ id: z2.number().int().positive().optional(), name: z2.string().trim().min(2).max(160), cpf: z2.string().min(11).max(18), phone: z2.string().max(30).optional(), notes: z2.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
+      await operator(ctx);
+      return saveCustomer(input, ctx.user.id);
+    }),
+    delete: protectedProcedure.input(z2.object({ customerId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return deleteCustomer(input.customerId, ctx.user.id);
     })
   })
 });

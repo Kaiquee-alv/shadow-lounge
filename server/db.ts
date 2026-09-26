@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
   auditLogs,
+  customers,
   expenses,
   localCredentials,
   localSessions,
@@ -83,6 +84,9 @@ export async function ensureInitialData() {
 
   // Mantém instalações existentes compatíveis com o campo adicionado depois do schema inicial.
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "customers" ("id" serial PRIMARY KEY, "name" varchar(160) NOT NULL, "cpf" varchar(11) NOT NULL, "phone" varchar(30), "notes" varchar(500), "active" boolean NOT NULL DEFAULT true, "createdAt" timestamp NOT NULL DEFAULT now(), "updatedAt" timestamp NOT NULL DEFAULT now())`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "customers_cpf_unique" ON "customers" ("cpf")`);
+  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerId" integer REFERENCES "customers"("id")`);
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
   // Permite linhas separadas para o mesmo produto quando uma delas usa uma promoção.
@@ -377,6 +381,8 @@ export async function getTabDetails(tabId: number) {
     id: tabs.id,
     tabCode: tabs.tabCode,
     customerName: tabs.customerName,
+    customerId: tabs.customerId,
+    customerCpf: customers.cpf,
     status: tabs.status,
     openedAt: tabs.openedAt,
     closedAt: tabs.closedAt,
@@ -387,7 +393,7 @@ export async function getTabDetails(tabId: number) {
     tableNumber: loungeTables.number,
     tableId: loungeTables.id,
     openedByName: users.name,
-  }).from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).leftJoin(users, eq(tabs.openedBy, users.id)).where(eq(tabs.id, tabId)).limit(1);
+  }).from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).leftJoin(users, eq(tabs.openedBy, users.id)).leftJoin(customers, eq(tabs.customerId, customers.id)).where(eq(tabs.id, tabId)).limit(1);
   if (!tab[0]) throw new Error("Comanda não encontrada");
 
   const [items, paymentRows, launchHistory] = await Promise.all([
@@ -443,6 +449,55 @@ export async function setTabCustomerName(tabId: number, customerName: string | n
       description: normalizedName ? `Atribuiu a comanda ${tab[0].tabCode} a ${normalizedName}` : `Removeu o nome da comanda ${tab[0].tabCode}`,
     });
     return { tabId, customerName: normalizedName };
+  });
+}
+
+function normalizeCpf(cpf: string) {
+  return cpf.replace(/\D/g, "");
+}
+
+export async function listCustomers() {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  await ensureInitialData();
+  return db.select().from(customers).where(eq(customers.active, true)).orderBy(asc(customers.name));
+}
+
+export async function saveCustomer(input: { id?: number; name: string; cpf: string; phone?: string; notes?: string }, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const cpf = normalizeCpf(input.cpf);
+  if (cpf.length !== 11) throw new Error("Informe um CPF válido com 11 dígitos");
+  const name = input.name.trim();
+  if (name.length < 2) throw new Error("Informe o nome do cliente");
+  const data = { name, cpf, phone: input.phone?.trim() || null, notes: input.notes?.trim() || null, active: true, updatedAt: new Date() };
+  const result = input.id ? await db.update(customers).set(data).where(eq(customers.id, input.id)).returning({ id: customers.id }) : await db.insert(customers).values(data).returning({ id: customers.id });
+  if (!result[0]) throw new Error("Cliente não encontrado");
+  await writeAudit(userId, input.id ? "UPDATE_CUSTOMER" : "CREATE_CUSTOMER", "customer", Number(result[0].id), `${input.id ? "Atualizou" : "Cadastrou"} o cliente ${name}`);
+  return { id: Number(result[0].id), success: true };
+}
+
+export async function deleteCustomer(customerId: number, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const result = await db.update(customers).set({ active: false, updatedAt: new Date() }).where(eq(customers.id, customerId));
+  const affected = (result as unknown as { rowCount: number }).rowCount ?? 0;
+  if (affected !== 1) throw new Error("Cliente não encontrado");
+  await writeAudit(userId, "DEACTIVATE_CUSTOMER", "customer", customerId, "Desativou um cliente");
+  return { success: true };
+}
+
+export async function assignTabCustomer(tabId: number, customerId: number | null, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  return db.transaction(async (tx) => {
+    const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
+    if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
+    const customer = customerId ? await tx.select().from(customers).where(and(eq(customers.id, customerId), eq(customers.active, true))).limit(1) : [];
+    if (customerId && !customer[0]) throw new Error("Cliente não encontrado ou inativo");
+    await tx.update(tabs).set({ customerId, customerName: customer[0]?.name ?? null, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.insert(auditLogs).values({ userId, action: "UPDATE_TAB_CUSTOMER", entityType: "tab", entityId: tabId, description: customer[0] ? `Atribuiu ${customer[0].name} (CPF ${customer[0].cpf}) à comanda ${tab[0].tabCode}` : `Removeu o cliente da comanda ${tab[0].tabCode}` });
+    return { tabId, customerId, customerName: customer[0]?.name ?? null, customerCpf: customer[0]?.cpf ?? null };
   });
 }
 

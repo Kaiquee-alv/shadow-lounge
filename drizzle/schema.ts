@@ -140,6 +140,21 @@ export const loungeTables = pgTable(
   (table) => [uniqueIndex("lounge_tables_number_unique").on(table.number)],
 );
 
+export const customers = pgTable(
+  "customers",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 160 }).notNull(),
+    cpf: varchar("cpf", { length: 11 }).notNull(),
+    phone: varchar("phone", { length: 30 }),
+    notes: varchar("notes", { length: 500 }),
+    active: boolean("active").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("customers_cpf_unique").on(table.cpf), index("customers_active_idx").on(table.active)],
+);
+
 export const tabs = pgTable(
   "tabs",
   {
@@ -148,6 +163,7 @@ export const tabs = pgTable(
     tabCode: varchar("tabCode", { length: 24 }).notNull(),
     offlineKey: varchar("offlineKey", { length: 80 }),
     customerName: varchar("customerName", { length: 120 }),
+    customerId: integer("customerId").references(() => customers.id),
     status: tabStatusEnum("status").default("open").notNull(),
     openedBy: integer("openedBy").notNull().references(() => users.id),
     openedAt: timestamp("openedAt").defaultNow().notNull(),
