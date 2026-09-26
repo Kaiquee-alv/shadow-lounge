@@ -146,7 +146,8 @@ h3 { margin: 4px 0 0; color: #f3eee6; font-family: "Outfit", sans-serif; font-si
 
 .price-rules-panel { margin-top: 16px; }
 .panel-help { margin: 7px 0 0; color: #89858d; font-size: 11px; }
-.price-rule-form { padding: 0 20px 18px; display: grid; grid-template-columns: 1.4fr 1.3fr .8fr .8fr .9fr auto; gap: 10px; align-items: end; }
+.price-rule-form { padding: 0 20px 18px; display: grid; grid-template-columns: 1.25fr 1.15fr .72fr .72fr minmax(245px, 1.75fr) .9fr auto; gap: 10px; align-items: end; }
+.table-limit-panel .price-rule-form { grid-template-columns: minmax(220px, 320px) auto; justify-content: start; }
 .price-rule-form select, .price-rule-form input { margin-top: 6px; }
 .price-rules-list { border-top: 1px solid #292a33; }
 .price-rule-row { padding: 12px 20px; display: flex; justify-content: space-between; border-bottom: 1px solid #292a33; }
@@ -154,7 +155,14 @@ h3 { margin: 4px 0 0; color: #f3eee6; font-family: "Outfit", sans-serif; font-si
 .price-rule-row b { color: #e8e2d9; font-size: 12px; }
 .price-rule-row small { margin-top: 3px; color: #8b8790; font-size: 10px; }
 .price-rule-row strong { color: #f1c15f; font-size: 13px; }
-@media (max-width: 900px) { .price-rule-form { grid-template-columns: repeat(2, 1fr); } }
+.weekday-field { min-width: 0; }
+.weekday-field > .field-label { display: block; margin-bottom: 6px; }
+.weekday-picker { display: flex; gap: 4px; }
+.weekday-chip { flex: 1; min-width: 30px; padding: 7px 4px; border: 1px solid #393943; border-radius: 8px; color: #aaa6af; background: #181820; font-size: 10px; cursor: pointer; }
+.weekday-chip-selected { border-color: #b98e49; color: #f3d18c; background: #302719; }
+.weekday-field > small { display: block; min-height: 13px; margin-top: 5px; color: #8b8790; font-size: 9px; }
+@media (max-width: 1300px) { .price-rules-panel .price-rule-form { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .price-rules-panel .price-rule-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .price-rule-form { grid-template-columns: 1fr; } }
 
 .mode-block { padding-bottom: 10px; border-bottom: 1px solid #35323b; display: grid; gap: 7px; }

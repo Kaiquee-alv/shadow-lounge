@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -120,6 +121,7 @@ export const productPriceRules = pgTable(
     name: varchar("name", { length: 140 }).notNull(),
     startTime: varchar("startTime", { length: 5 }).notNull(),
     endTime: varchar("endTime", { length: 5 }).notNull(),
+    daysOfWeek: integer("daysOfWeek").array().notNull().default(sql`ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`),
     priceCents: integer("priceCents").notNull(),
     active: boolean("active").default(true).notNull(),
     createdBy: integer("createdBy").notNull().references(() => users.id),

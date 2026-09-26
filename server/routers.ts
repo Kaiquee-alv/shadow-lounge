@@ -286,7 +286,7 @@ export const appRouter = router({
       await requireRole(ctx, ["administrator", "manager"]);
       return listProductPriceRules();
     }),
-    createRule: protectedProcedure.input(z.object({ productId: z.number().int().positive(), name: z.string().min(2).max(140), startTime: z.string().regex(/^\d{2}:\d{2}$/), endTime: z.string().regex(/^\d{2}:\d{2}$/), priceCents: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    createRule: protectedProcedure.input(z.object({ productId: z.number().int().positive(), name: z.string().min(2).max(140), startTime: z.string().regex(/^\d{2}:\d{2}$/), endTime: z.string().regex(/^\d{2}:\d{2}$/), daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7).refine((days) => new Set(days).size === days.length, { message: "Remova dias repetidos" }), priceCents: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return createProductPriceRule(input, ctx.user.id);
     }),
