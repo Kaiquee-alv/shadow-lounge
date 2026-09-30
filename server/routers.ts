@@ -52,6 +52,7 @@ import {
   updateCommercialSettings,
   updateTableLimit,
 } from "./db.js";
+import { weekdaysToMask } from "./price-rule-utils.js";
 
 const paymentMethod = z.enum(["pix", "cash", "debit", "credit", "other"]);
 const localRole = z.enum(["administrator", "manager", "attendant"]);
@@ -287,11 +288,11 @@ export const appRouter = router({
       await requireRole(ctx, ["administrator", "manager"]);
       return listProductPriceRules();
     }),
-    createRule: protectedProcedure.input(z.object({ productId: z.number().int().positive(), name: z.string().min(2).max(140), startTime: z.string().regex(/^\d{2}:\d{2}$/), endTime: z.string().regex(/^\d{2}:\d{2}$/), daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7).refine((days) => new Set(days).size === days.length, { message: "Remova dias repetidos" }), priceCents: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    createRule: protectedProcedure.input(z.object({ productId: z.number().int().positive(), name: z.string().min(2).max(140), startTime: z.string().regex(/^\d{2}:\d{2}$/), endTime: z.string().regex(/^\d{2}:\d{2}$/), daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7).refine((days) => new Set(days).size === days.length, { message: "Remova dias repetidos" }), weekdaysMask: z.number().int().min(1).max(127), priceCents: z.number().int().positive() }).refine((input) => weekdaysToMask(input.daysOfWeek) === input.weekdaysMask, { message: "Os dias selecionados não correspondem à regra" })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return createProductPriceRule(input, ctx.user.id);
     }),
-    updateRule: protectedProcedure.input(z.object({ ruleId: z.number().int().positive(), productId: z.number().int().positive(), name: z.string().trim().min(2).max(140), startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/), endTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/), daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7).refine((days) => new Set(days).size === days.length, { message: "Remova dias repetidos" }), priceCents: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    updateRule: protectedProcedure.input(z.object({ ruleId: z.number().int().positive(), productId: z.number().int().positive(), name: z.string().trim().min(2).max(140), startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/), endTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/), daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7).refine((days) => new Set(days).size === days.length, { message: "Remova dias repetidos" }), weekdaysMask: z.number().int().min(1).max(127), priceCents: z.number().int().positive() }).refine((input) => weekdaysToMask(input.daysOfWeek) === input.weekdaysMask, { message: "Os dias selecionados não correspondem à regra" })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return updateProductPriceRule(input, ctx.user.id);
     }),

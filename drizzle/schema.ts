@@ -122,6 +122,7 @@ export const productPriceRules = pgTable(
     startTime: varchar("startTime", { length: 5 }).notNull(),
     endTime: varchar("endTime", { length: 5 }).notNull(),
     daysOfWeek: integer("daysOfWeek").array().notNull().default(sql`ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`),
+    weekdaysMask: integer("weekdaysMask").notNull().default(127),
     priceCents: integer("priceCents").notNull(),
     active: boolean("active").default(true).notNull(),
     createdBy: integer("createdBy").notNull().references(() => users.id),

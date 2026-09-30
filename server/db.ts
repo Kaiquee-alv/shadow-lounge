@@ -22,7 +22,7 @@ import {
   users,
 } from "../drizzle/schema.js";
 import { ENV } from "./_core/env.js";
-import { priceRuleAppliesAt, saoPauloClock, timeInWindow } from "./price-rule-utils.js";
+import { priceRuleAppliesAt, saoPauloClock, timeInWindow, weekdaysFromMask, weekdaysToMask } from "./price-rule-utils.js";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _pool: Pool | null = null;
@@ -92,6 +92,9 @@ export async function ensureInitialData() {
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
   // Regras criadas antes dos dias da semana continuam valendo todos os dias.
   await db.execute(sql`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "daysOfWeek" integer[] NOT NULL DEFAULT ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`);
+  await db.execute(sql`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "weekdaysMask" integer NOT NULL DEFAULT 127`);
+  // Reconciliates existing arrays into the explicit bitmask, preserving selected days from earlier deployments.
+  await db.execute(sql`UPDATE "product_price_rules" AS rule SET "weekdaysMask" = COALESCE((SELECT bit_or(1 << value) FROM unnest(COALESCE(rule."daysOfWeek", ARRAY[]::integer[])) AS selected_day(value)), 127)`);
   // Permite linhas separadas para o mesmo produto quando uma delas usa uma promoção.
   await db.execute(sql`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
@@ -598,7 +601,7 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
 
     const { weekday: currentWeekday, minutes: currentMinutes } = saoPauloClock(new Date());
     const scheduledRules = await tx.select().from(productPriceRules).where(and(eq(productPriceRules.productId, input.productId), eq(productPriceRules.active, true)));
-    const scheduledRule = scheduledRules.find((rule) => priceRuleAppliesAt(rule.daysOfWeek, rule.startTime, rule.endTime, currentWeekday, currentMinutes));
+    const scheduledRule = scheduledRules.find((rule) => priceRuleAppliesAt(weekdaysFromMask(rule.weekdaysMask) ?? rule.daysOfWeek, rule.startTime, rule.endTime, currentWeekday, currentMinutes));
     const scheduledPriceCents = scheduledRule?.priceCents ?? product[0].priceCents;
     const happyHourActive = Boolean(
       systemSettings[0]?.happyHourEnabled &&
@@ -1074,11 +1077,11 @@ export async function listProductPriceRules() {
   await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
-  return db.select({ id: productPriceRules.id, productId: productPriceRules.productId, productName: products.name, name: productPriceRules.name, startTime: productPriceRules.startTime, endTime: productPriceRules.endTime, daysOfWeek: productPriceRules.daysOfWeek, priceCents: productPriceRules.priceCents, active: productPriceRules.active })
+  return db.select({ id: productPriceRules.id, productId: productPriceRules.productId, productName: products.name, name: productPriceRules.name, startTime: productPriceRules.startTime, endTime: productPriceRules.endTime, daysOfWeek: productPriceRules.daysOfWeek, weekdaysMask: productPriceRules.weekdaysMask, priceCents: productPriceRules.priceCents, active: productPriceRules.active })
     .from(productPriceRules).innerJoin(products, eq(productPriceRules.productId, products.id)).orderBy(asc(products.name), asc(productPriceRules.startTime));
 }
 
-export async function createProductPriceRule(input: { productId: number; name: string; startTime: string; endTime: string; daysOfWeek: number[]; priceCents: number }, userId: number) {
+export async function createProductPriceRule(input: { productId: number; name: string; startTime: string; endTime: string; daysOfWeek: number[]; weekdaysMask: number; priceCents: number }, userId: number) {
   await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
@@ -1088,15 +1091,15 @@ export async function createProductPriceRule(input: { productId: number; name: s
   const product = await db.select().from(products).where(eq(products.id, input.productId)).limit(1);
   if (!product[0]) throw new Error("Produto não encontrado");
   const daysOfWeek = Array.from(new Set(input.daysOfWeek)).sort((a, b) => a - b);
-  if (!daysOfWeek.length || daysOfWeek.some((day) => !Number.isInteger(day) || day < 0 || day > 6)) throw new Error("Selecione ao menos um dia válido para a promoção");
-  const inserted = await db.insert(productPriceRules).values({ ...input, daysOfWeek, active: true, createdBy: userId }).returning({ id: productPriceRules.id });
+  if (!daysOfWeek.length || daysOfWeek.some((day) => !Number.isInteger(day) || day < 0 || day > 6) || input.weekdaysMask !== weekdaysToMask(daysOfWeek)) throw new Error("Os dias selecionados da promoção são inválidos");
+  const inserted = await db.insert(productPriceRules).values({ ...input, daysOfWeek, weekdaysMask: input.weekdaysMask, active: true, createdBy: userId }).returning({ id: productPriceRules.id });
   const id = Number(inserted[0].id);
   const dayNames = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
   await writeAudit(userId, "CREATE_PRICE_RULE", "product_price_rule", id, `Criou preço programado para ${product[0].name}: ${input.startTime}-${input.endTime} (${daysOfWeek.map((day) => dayNames[day]).join(", ")})`);
   return { id };
 }
 
-export async function updateProductPriceRule(input: { ruleId: number; productId: number; name: string; startTime: string; endTime: string; daysOfWeek: number[]; priceCents: number }, userId: number) {
+export async function updateProductPriceRule(input: { ruleId: number; productId: number; name: string; startTime: string; endTime: string; daysOfWeek: number[]; weekdaysMask: number; priceCents: number }, userId: number) {
   await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
@@ -1104,7 +1107,7 @@ export async function updateProductPriceRule(input: { ruleId: number; productId:
     throw new Error("Informe horários válidos e diferentes para início e fim");
   }
   const daysOfWeek = Array.from(new Set(input.daysOfWeek)).sort((a, b) => a - b);
-  if (!daysOfWeek.length || daysOfWeek.some((day) => !Number.isInteger(day) || day < 0 || day > 6)) throw new Error("Selecione ao menos um dia válido para a promoção");
+  if (!daysOfWeek.length || daysOfWeek.some((day) => !Number.isInteger(day) || day < 0 || day > 6) || input.weekdaysMask !== weekdaysToMask(daysOfWeek)) throw new Error("Os dias selecionados da promoção são inválidos");
   const product = await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.id, input.productId)).limit(1);
   if (!product[0]) throw new Error("Produto não encontrado");
   const rule = await db.select({ id: productPriceRules.id }).from(productPriceRules).where(eq(productPriceRules.id, input.ruleId)).limit(1);
@@ -1115,6 +1118,7 @@ export async function updateProductPriceRule(input: { ruleId: number; productId:
     startTime: input.startTime,
     endTime: input.endTime,
     daysOfWeek,
+    weekdaysMask: input.weekdaysMask,
     priceCents: input.priceCents,
   }).where(eq(productPriceRules.id, input.ruleId));
   const affected = (result as unknown as { rowCount: number }).rowCount ?? 0;

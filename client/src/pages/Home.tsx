@@ -31,11 +31,17 @@ const weekdayOptions = [
   { value: 5, label: "Sex", name: "sexta-feira" }, { value: 6, label: "Sáb", name: "sábado" },
   { value: 0, label: "Dom", name: "domingo" },
 ];
-const formatWeekdays = (days: unknown) => {
-  if (!Array.isArray(days)) return "Dias não carregados — atualize o servidor";
-  const selected = Array.from(new Set(days.filter((day): day is number => Number.isInteger(day) && day >= 0 && day <= 6)));
+const weekdayValuesFromRule = (rule: any): number[] => {
+  if (Number.isInteger(rule?.weekdaysMask) && rule.weekdaysMask >= 1 && rule.weekdaysMask <= 127) {
+    return weekdayOptions.filter((day) => (rule.weekdaysMask & (1 << day.value)) !== 0).map((day) => day.value);
+  }
+  if (Array.isArray(rule?.daysOfWeek)) return Array.from(new Set(rule.daysOfWeek.filter((day: unknown): day is number => Number.isInteger(day) && Number(day) >= 0 && Number(day) <= 6)));
+  return [];
+};
+const formatWeekdays = (days: number[]) => {
+  const selected = Array.from(new Set(days));
   if (selected.length === 7) return "Todos os dias";
-  if (!selected.length) return "Nenhum dia selecionado";
+  if (!selected.length) return "Dias não definidos";
   return weekdayOptions.filter((day) => selected.includes(day.value)).map((day) => day.name).join(", ");
 };
 
@@ -657,12 +663,8 @@ function SettingsPage({ products, rules, tableLimit, preventNegativeStock, table
     setRule({ productId: products[0]?.id ?? 1, name: "Preço especial", startTime: "15:00", endTime: "21:00", daysOfWeek: [0, 1, 2, 3, 4, 5, 6], price: "12" });
   };
   const editRule = (item: any) => {
-    if (!Array.isArray(item.daysOfWeek)) {
-      toast.error("Os dias da regra não foram carregados. Atualize/reinicie o servidor antes de editar.");
-      return;
-    }
     setEditingRuleId(item.id);
-    setRule({ productId: item.productId, name: item.name, startTime: item.startTime, endTime: item.endTime, daysOfWeek: [...item.daysOfWeek], price: (item.priceCents / 100).toFixed(2) });
+    setRule({ productId: item.productId, name: item.name, startTime: item.startTime, endTime: item.endTime, daysOfWeek: weekdayValuesFromRule(item), price: (item.priceCents / 100).toFixed(2) });
   };
   const submitRule = () => {
     const priceCents = Math.round(Number(rule.price.replace(",", ".")) * 100);
@@ -670,7 +672,7 @@ function SettingsPage({ products, rules, tableLimit, preventNegativeStock, table
       toast.error("Preencha produto, nome, preço e ao menos um dia");
       return;
     }
-    const input = { productId: rule.productId, name: rule.name.trim(), startTime: rule.startTime, endTime: rule.endTime, daysOfWeek: rule.daysOfWeek, priceCents };
+    const input = { productId: rule.productId, name: rule.name.trim(), startTime: rule.startTime, endTime: rule.endTime, daysOfWeek: rule.daysOfWeek, weekdaysMask: rule.daysOfWeek.reduce((mask, day) => mask | (1 << day), 0), priceCents };
     if (editingRuleId !== null) {
       void onUpdateRule({ ...input, ruleId: editingRuleId }).then(resetRuleForm).catch(() => {});
     } else {
@@ -686,7 +688,7 @@ function SettingsPage({ products, rules, tableLimit, preventNegativeStock, table
         <div className="weekday-field"><span className="field-label">Dias da semana</span><div className="weekday-picker" role="group" aria-label="Dias em que a promoção será aplicada">{weekdayOptions.map((day) => <button type="button" key={day.value} className={rule.daysOfWeek.includes(day.value) ? "weekday-chip weekday-chip-selected" : "weekday-chip"} aria-pressed={rule.daysOfWeek.includes(day.value)} onClick={() => setRule({ ...rule, daysOfWeek: rule.daysOfWeek.includes(day.value) ? rule.daysOfWeek.filter((selectedDay) => selectedDay !== day.value) : [...rule.daysOfWeek, day.value] })}>{day.label}</button>)}</div><small>{formatWeekdays(rule.daysOfWeek)} · Em regras após meia-noite, a faixa após 00:00 acompanha o dia de início.</small></div><label className="field-label">Preço (R$)<Input type="number" inputMode="decimal" min="0.01" step="0.01" value={rule.price} onChange={(event) => setRule({ ...rule, price: event.target.value })} /></label>
         <div className="rule-form-actions"><Button disabled={updateRuleSaving} onClick={submitRule}>{updateRuleSaving ? "Salvando..." : editingRuleId !== null ? "Salvar edição" : "Criar regra"}</Button>{editingRuleId !== null && <Button type="button" variant="outline" disabled={updateRuleSaving} onClick={resetRuleForm}>Cancelar</Button>}</div>
       </div>
-      <div className="price-rules-list">{rules.length ? rules.map((item: any) => <div className={`price-rule-row ${item.active ? "" : "price-rule-inactive"}`} key={item.id}><span><b>{item.productName}</b><small>{item.name} · {item.startTime}–{item.endTime} · {formatWeekdays(item.daysOfWeek)} · {item.active ? "Ativa" : "Inativa"}</small></span><strong>{money(item.priceCents)}</strong><div className="price-rule-actions"><Button variant="outline" size="sm" disabled={updateRuleSaving} onClick={() => editRule(item)}><Pencil size={14} /> Editar</Button><Button variant="outline" size="sm" onClick={() => onSetRuleActive({ ruleId: item.id, active: !item.active })}>{item.active ? "Desativar" : "Ativar"}</Button><Button variant="outline" size="sm" onClick={() => onDeleteRule({ ruleId: item.id })}>Excluir</Button></div></div>) : <p className="empty-inline">Nenhum preço programado cadastrado.</p>}</div>
+      <div className="price-rules-list">{rules.length ? rules.map((item: any) => <div className={`price-rule-row ${item.active ? "" : "price-rule-inactive"}`} key={item.id}><span><b>{item.productName}</b><small>{item.name} · {item.startTime}–{item.endTime} · {formatWeekdays(weekdayValuesFromRule(item))} · {item.active ? "Ativa" : "Inativa"}</small></span><strong>{money(item.priceCents)}</strong><div className="price-rule-actions"><Button variant="outline" size="sm" disabled={updateRuleSaving} onClick={() => editRule(item)}><Pencil size={14} /> Editar</Button><Button variant="outline" size="sm" onClick={() => onSetRuleActive({ ruleId: item.id, active: !item.active })}>{item.active ? "Desativar" : "Ativar"}</Button><Button variant="outline" size="sm" onClick={() => onDeleteRule({ ruleId: item.id })}>Excluir</Button></div></div>) : <p className="empty-inline">Nenhum preço programado cadastrado.</p>}</div>
     </section>
     <section className="settings-list"><div><div><b>Impedir estoque negativo</b><span>{preventNegativeStock ? "Bloqueia lançamentos quando não houver saldo disponível." : "Permite lançamentos mesmo sem saldo disponível."}</span></div><Button variant="outline" disabled={stockPolicySaving} onClick={() => onUpdateNegativeStock(!preventNegativeStock)}>{stockPolicySaving ? "Salvando..." : preventNegativeStock ? "Desativar bloqueio" : "Ativar bloqueio"}</Button></div></section>
   </div>;

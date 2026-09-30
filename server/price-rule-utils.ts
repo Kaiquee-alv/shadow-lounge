@@ -21,6 +21,17 @@ export function saoPauloClock(date = new Date()): { weekday: number; minutes: nu
   return { weekday, minutes: hour * 60 + minute };
 }
 
+/** Sunday=0 through Saturday=6; bit zero denotes Sunday. */
+export function weekdaysToMask(days: number[]): number {
+  return days.reduce((mask, day) => Number.isInteger(day) && day >= 0 && day <= 6 ? mask | (1 << day) : mask, 0);
+}
+
+/** Returns null for an invalid or empty mask, never silently interpreting it as all days. */
+export function weekdaysFromMask(mask: unknown): number[] | null {
+  if (!Number.isInteger(mask) || Number(mask) < 1 || Number(mask) > 127) return null;
+  return Array.from({ length: 7 }, (_, day) => day).filter((day) => (Number(mask) & (1 << day)) !== 0);
+}
+
 export function timeInWindow(currentMinutes: number, startTime: string, endTime: string): boolean {
   const start = parseRuleTime(startTime);
   const end = parseRuleTime(endTime);
@@ -44,6 +55,5 @@ export function priceRuleAppliesAt(daysOfWeek: number[] | null | undefined, star
   const days = Array.isArray(daysOfWeek) ? daysOfWeek : [0, 1, 2, 3, 4, 5, 6];
   if (start < end) return days.includes(weekday) && currentMinutes >= start && currentMinutes < end;
   if (currentMinutes >= start) return days.includes(weekday);
-  // If the rule ends at 00:00, the next day has no included minutes.
   return end > 0 && currentMinutes < end && days.includes((weekday + 6) % 7);
 }
