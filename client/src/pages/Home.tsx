@@ -32,7 +32,8 @@ const weekdayOptions = [
   { value: 0, label: "Dom", name: "domingo" },
 ];
 const formatWeekdays = (days: unknown) => {
-  const selected = Array.isArray(days) ? days.filter((day): day is number => Number.isInteger(day) && day >= 0 && day <= 6) : [0, 1, 2, 3, 4, 5, 6];
+  if (!Array.isArray(days)) return "Dias não carregados — atualize o servidor";
+  const selected = Array.from(new Set(days.filter((day): day is number => Number.isInteger(day) && day >= 0 && day <= 6)));
   if (selected.length === 7) return "Todos os dias";
   if (!selected.length) return "Nenhum dia selecionado";
   return weekdayOptions.filter((day) => selected.includes(day.value)).map((day) => day.name).join(", ");
@@ -656,8 +657,12 @@ function SettingsPage({ products, rules, tableLimit, preventNegativeStock, table
     setRule({ productId: products[0]?.id ?? 1, name: "Preço especial", startTime: "15:00", endTime: "21:00", daysOfWeek: [0, 1, 2, 3, 4, 5, 6], price: "12" });
   };
   const editRule = (item: any) => {
+    if (!Array.isArray(item.daysOfWeek)) {
+      toast.error("Os dias da regra não foram carregados. Atualize/reinicie o servidor antes de editar.");
+      return;
+    }
     setEditingRuleId(item.id);
-    setRule({ productId: item.productId, name: item.name, startTime: item.startTime, endTime: item.endTime, daysOfWeek: Array.isArray(item.daysOfWeek) ? [...item.daysOfWeek] : [0, 1, 2, 3, 4, 5, 6], price: (item.priceCents / 100).toFixed(2) });
+    setRule({ productId: item.productId, name: item.name, startTime: item.startTime, endTime: item.endTime, daysOfWeek: [...item.daysOfWeek], price: (item.priceCents / 100).toFixed(2) });
   };
   const submitRule = () => {
     const priceCents = Math.round(Number(rule.price.replace(",", ".")) * 100);
