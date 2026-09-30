@@ -22,7 +22,7 @@ import {
   users,
 } from "../drizzle/schema.js";
 import { ENV } from "./_core/env.js";
-import { priceRuleAppliesAt } from "./price-rule-utils.js";
+import { priceRuleAppliesAt, saoPauloClock, timeInWindow } from "./price-rule-utils.js";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _pool: Pool | null = null;
@@ -316,34 +316,6 @@ function parseTime(value: string) {
   return hours * 60 + minutes;
 }
 
-function timeInWindow(currentMinutes: number, startTime: string, endTime: string) {
-  const start = parseTime(startTime);
-  const end = parseTime(endTime);
-  if (start === null || end === null || start === end) return false;
-  // Intervalo semiaberto: começa no horário inicial e termina exatamente antes do final.
-  // Também suporta promoções que atravessam a meia-noite, como 22:00–02:00.
-  return start < end
-    ? currentMinutes >= start && currentMinutes < end
-    : currentMinutes >= start || currentMinutes < end;
-}
-
-function currentSaoPauloMinutes(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Sao_Paulo",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(date);
-  const hours = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
-  const minutes = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
-  return (hours === 24 ? 0 : hours) * 60 + minutes;
-}
-
-function currentSaoPauloWeekday(date = new Date()) {
-  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short" }).format(date);
-  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(weekday);
-}
-
 export async function listTables() {
   await ensureInitialData();
   const db = await getDb();
@@ -624,9 +596,7 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
     const systemSettings = await tx.select().from(settings).limit(1);
     if (systemSettings[0]?.preventNegativeStock && product[0].stockQuantity < input.quantity) throw new Error("Estoque insuficiente para este lançamento");
 
-    const now = new Date();
-    const currentMinutes = currentSaoPauloMinutes(now);
-    const currentWeekday = currentSaoPauloWeekday(now);
+    const { weekday: currentWeekday, minutes: currentMinutes } = saoPauloClock(new Date());
     const scheduledRules = await tx.select().from(productPriceRules).where(and(eq(productPriceRules.productId, input.productId), eq(productPriceRules.active, true)));
     const scheduledRule = scheduledRules.find((rule) => priceRuleAppliesAt(rule.daysOfWeek, rule.startTime, rule.endTime, currentWeekday, currentMinutes));
     const scheduledPriceCents = scheduledRule?.priceCents ?? product[0].priceCents;
