@@ -208,11 +208,12 @@ var systemRouter = router({
 
 // server/db.ts
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
-import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql as sql2 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
 // drizzle/schema.ts
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -323,6 +324,8 @@ var productPriceRules = pgTable(
     name: varchar("name", { length: 140 }).notNull(),
     startTime: varchar("startTime", { length: 5 }).notNull(),
     endTime: varchar("endTime", { length: 5 }).notNull(),
+    daysOfWeek: integer("daysOfWeek").array().notNull().default(sql`ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`),
+    weekdaysMask: integer("weekdaysMask").notNull().default(127),
     priceCents: integer("priceCents").notNull(),
     active: boolean("active").default(true).notNull(),
     createdBy: integer("createdBy").notNull().references(() => users.id),
@@ -477,6 +480,50 @@ var auditLogs = pgTable(
   (table) => [index("audit_logs_created_idx").on(table.createdAt)]
 );
 
+// server/price-rule-utils.ts
+function parseRuleTime(value) {
+  const match = /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(value);
+  if (!match) return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+function saoPauloClock(date = /* @__PURE__ */ new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const weekdayText = parts.find((part) => part.type === "weekday")?.value ?? "";
+  const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(weekdayText);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value);
+  return { weekday, minutes: hour * 60 + minute };
+}
+function weekdaysToMask(days) {
+  return days.reduce((mask, day) => Number.isInteger(day) && day >= 0 && day <= 6 ? mask | 1 << day : mask, 0);
+}
+function weekdaysFromMask(mask) {
+  if (!Number.isInteger(mask) || Number(mask) < 1 || Number(mask) > 127) return null;
+  return Array.from({ length: 7 }, (_, day) => day).filter((day) => (Number(mask) & 1 << day) !== 0);
+}
+function timeInWindow(currentMinutes, startTime, endTime) {
+  const start = parseRuleTime(startTime);
+  const end = parseRuleTime(endTime);
+  if (start === null || end === null || start === end || !Number.isInteger(currentMinutes) || currentMinutes < 0 || currentMinutes >= 1440) return false;
+  return start < end ? currentMinutes >= start && currentMinutes < end : currentMinutes >= start || currentMinutes < end;
+}
+function priceRuleAppliesAt(daysOfWeek, startTime, endTime, weekday, currentMinutes) {
+  const start = parseRuleTime(startTime);
+  const end = parseRuleTime(endTime);
+  if (start === null || end === null || start === end || weekday < 0 || weekday > 6 || !Number.isInteger(currentMinutes) || currentMinutes < 0 || currentMinutes >= 1440) return false;
+  const days = Array.isArray(daysOfWeek) ? daysOfWeek : [0, 1, 2, 3, 4, 5, 6];
+  if (start < end) return days.includes(weekday) && currentMinutes >= start && currentMinutes < end;
+  if (currentMinutes >= start) return days.includes(weekday);
+  return end > 0 && currentMinutes < end && days.includes((weekday + 6) % 7);
+}
+
 // server/db.ts
 var _db = null;
 var _pool = null;
@@ -538,14 +585,17 @@ var categoriesSeed = [
 async function ensureInitialData() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
-  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
-  await db.execute(sql`CREATE TABLE IF NOT EXISTS "customers" ("id" serial PRIMARY KEY, "name" varchar(160) NOT NULL, "cpf" varchar(11) NOT NULL, "phone" varchar(30), "notes" varchar(500), "active" boolean NOT NULL DEFAULT true, "createdAt" timestamp NOT NULL DEFAULT now(), "updatedAt" timestamp NOT NULL DEFAULT now())`);
-  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "customers_cpf_unique" ON "customers" ("cpf")`);
-  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerId" integer REFERENCES "customers"("id")`);
-  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
-  await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
-  await db.execute(sql`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
+  await db.execute(sql2`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
+  await db.execute(sql2`CREATE TABLE IF NOT EXISTS "customers" ("id" serial PRIMARY KEY, "name" varchar(160) NOT NULL, "cpf" varchar(11) NOT NULL, "phone" varchar(30), "notes" varchar(500), "active" boolean NOT NULL DEFAULT true, "createdAt" timestamp NOT NULL DEFAULT now(), "updatedAt" timestamp NOT NULL DEFAULT now())`);
+  await db.execute(sql2`CREATE UNIQUE INDEX IF NOT EXISTS "customers_cpf_unique" ON "customers" ("cpf")`);
+  await db.execute(sql2`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerId" integer REFERENCES "customers"("id")`);
+  await db.execute(sql2`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
+  await db.execute(sql2`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
+  await db.execute(sql2`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "daysOfWeek" integer[] NOT NULL DEFAULT ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`);
+  await db.execute(sql2`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "weekdaysMask" integer NOT NULL DEFAULT 127`);
+  await db.execute(sql2`UPDATE "product_price_rules" AS rule SET "weekdaysMask" = COALESCE((SELECT bit_or(1 << value) FROM unnest(COALESCE(rule."daysOfWeek", ARRAY[]::integer[])) AS selected_day(value)), 127)`);
+  await db.execute(sql2`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
+  await db.execute(sql2`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index2) => ({ number: index2 + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({
     target: productCategories.name,
@@ -734,23 +784,6 @@ function parseTime(value) {
   const [hours, minutes] = value.split(":").map(Number);
   return hours * 60 + minutes;
 }
-function timeInWindow(currentMinutes, startTime, endTime) {
-  const start = parseTime(startTime);
-  const end = parseTime(endTime);
-  if (start === null || end === null || start === end) return false;
-  return start < end ? currentMinutes >= start && currentMinutes < end : currentMinutes >= start || currentMinutes < end;
-}
-function currentSaoPauloMinutes(date = /* @__PURE__ */ new Date()) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Sao_Paulo",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).formatToParts(date);
-  const hours = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
-  const minutes = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
-  return (hours === 24 ? 0 : hours) * 60 + minutes;
-}
 async function listTables() {
   await ensureInitialData();
   const db = await getDb();
@@ -847,10 +880,10 @@ async function setTabCustomerName(tabId, customerName, userId) {
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   const normalizedName = customerName?.trim() || null;
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
-    await tx.update(tabs).set({ customerName: normalizedName, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.update(tabs).set({ customerName: normalizedName, customerId: null, version: sql2`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
     await tx.insert(auditLogs).values({
       userId,
       action: "UPDATE_TAB_CUSTOMER",
@@ -900,7 +933,7 @@ async function assignTabCustomer(tabId, customerId, userId) {
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
     const customer = customerId ? await tx.select().from(customers).where(and(eq(customers.id, customerId), eq(customers.active, true))).limit(1) : [];
     if (customerId && !customer[0]) throw new Error("Cliente n\xE3o encontrado ou inativo");
-    await tx.update(tabs).set({ customerId, customerName: customer[0]?.name ?? null, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.update(tabs).set({ customerId, customerName: customer[0]?.name ?? null, version: sql2`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
     await tx.insert(auditLogs).values({ userId, action: "UPDATE_TAB_CUSTOMER", entityType: "tab", entityId: tabId, description: customer[0] ? `Atribuiu ${customer[0].name} (CPF ${customer[0].cpf}) \xE0 comanda ${tab[0].tabCode}` : `Removeu o cliente da comanda ${tab[0].tabCode}` });
     return { tabId, customerId, customerName: customer[0]?.name ?? null, customerCpf: customer[0]?.cpf ?? null };
   });
@@ -909,7 +942,7 @@ async function openTab(tableId, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${tableId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM lounge_tables WHERE id = ${tableId} FOR UPDATE`);
     const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, tableId)).limit(1);
     if (!table[0]) throw new Error("Mesa n\xE3o encontrada");
     const existingOpenTab = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, tableId), eq(tabs.status, "open"))).limit(1);
@@ -930,7 +963,7 @@ async function syncOfflineTab(input, userId) {
   return db.transaction(async (tx) => {
     const existing = await tx.select({ id: tabs.id, tabCode: tabs.tabCode }).from(tabs).where(eq(tabs.offlineKey, input.offlineKey)).limit(1);
     if (existing[0]) return { tabId: existing[0].id, tabCode: existing[0].tabCode, duplicate: true };
-    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${input.tableId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM lounge_tables WHERE id = ${input.tableId} FOR UPDATE`);
     const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, input.tableId)).limit(1);
     if (!table[0]) throw new Error("Mesa n\xE3o encontrada");
     const open = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, input.tableId), eq(tabs.status, "open"))).limit(1);
@@ -942,12 +975,12 @@ async function syncOfflineTab(input, userId) {
     let subtotalCents = 0;
     for (const item of input.items) {
       if (item.quantity < 1 || item.quantity > 99) throw new Error("Quantidade de produto inv\xE1lida");
-      await tx.execute(sql`SELECT id FROM products WHERE id = ${item.productId} FOR UPDATE`);
+      await tx.execute(sql2`SELECT id FROM products WHERE id = ${item.productId} FOR UPDATE`);
       const product = await tx.select().from(products).where(eq(products.id, item.productId)).limit(1);
       if (!product[0] || !product[0].active) throw new Error(`Produto indispon\xEDvel: ${item.productName}`);
       const systemSettings = await tx.select().from(settings).limit(1);
       if (systemSettings[0]?.preventNegativeStock && product[0].stockQuantity < item.quantity) throw new Error(`Estoque insuficiente para ${product[0].name}`);
-      await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${item.quantity}` }).where(eq(products.id, product[0].id));
+      await tx.update(products).set({ stockQuantity: sql2`${products.stockQuantity} - ${item.quantity}` }).where(eq(products.id, product[0].id));
       await tx.insert(tabItems).values({ tabId, productId: product[0].id, productName: product[0].name, quantity: item.quantity, baseUnitPriceCents: product[0].priceCents, unitPriceCents: product[0].priceCents, unitCostCents: product[0].costCents, note: item.note ?? null, addedBy: userId });
       await tx.insert(stockMovements).values({ productId: product[0].id, quantity: item.quantity, direction: "out", reason: "Venda em comanda offline", referenceType: "tab", referenceId: tabId, createdBy: userId });
       subtotalCents += item.quantity * product[0].priceCents;
@@ -972,15 +1005,15 @@ async function transferTab(tabId, destinationTableId, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
     if (tab[0].tableId === destinationTableId) throw new Error("Escolha uma mesa diferente da atual");
-    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${destinationTableId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM lounge_tables WHERE id = ${destinationTableId} FOR UPDATE`);
     const destination = await tx.select().from(loungeTables).where(eq(loungeTables.id, destinationTableId)).limit(1);
     if (!destination[0]) throw new Error("Mesa de destino n\xE3o encontrada");
     if (destination[0].status !== "free" || destination[0].activeTabId) throw new Error("A mesa de destino j\xE1 est\xE1 ocupada");
-    await tx.update(tabs).set({ tableId: destinationTableId, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.update(tabs).set({ tableId: destinationTableId, version: sql2`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
     await tx.update(loungeTables).set({ status: "free", activeTabId: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq(loungeTables.id, tab[0].tableId));
     await tx.update(loungeTables).set({ status: "occupied", activeTabId: tabId, updatedAt: /* @__PURE__ */ new Date() }).where(eq(loungeTables.id, destinationTableId));
     await tx.insert(auditLogs).values({
@@ -997,17 +1030,17 @@ async function addTabItem(input, userId, localRole2) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
-    await tx.execute(sql`SELECT id FROM products WHERE id = ${input.productId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM products WHERE id = ${input.productId} FOR UPDATE`);
     const product = await tx.select().from(products).where(eq(products.id, input.productId)).limit(1);
     if (!product[0] || !product[0].active) throw new Error("Produto indispon\xEDvel");
     const systemSettings = await tx.select().from(settings).limit(1);
     if (systemSettings[0]?.preventNegativeStock && product[0].stockQuantity < input.quantity) throw new Error("Estoque insuficiente para este lan\xE7amento");
-    const currentMinutes = currentSaoPauloMinutes();
+    const { weekday: currentWeekday, minutes: currentMinutes } = saoPauloClock(/* @__PURE__ */ new Date());
     const scheduledRules = await tx.select().from(productPriceRules).where(and(eq(productPriceRules.productId, input.productId), eq(productPriceRules.active, true)));
-    const scheduledRule = scheduledRules.find((rule) => timeInWindow(currentMinutes, rule.startTime, rule.endTime));
+    const scheduledRule = scheduledRules.find((rule) => priceRuleAppliesAt(weekdaysFromMask(rule.weekdaysMask) ?? rule.daysOfWeek, rule.startTime, rule.endTime, currentWeekday, currentMinutes));
     const scheduledPriceCents = scheduledRule?.priceCents ?? product[0].priceCents;
     const happyHourActive = Boolean(
       systemSettings[0]?.happyHourEnabled && timeInWindow(
@@ -1020,12 +1053,12 @@ async function addTabItem(input, userId, localRole2) {
     const discountPercent = happyHourActive ? Math.min(100, Math.max(0, configuredDiscount)) : 0;
     const unitPriceCents = Math.round(scheduledPriceCents * (100 - discountPercent) / 100);
     const discountReason = happyHourActive ? `Happy Hour${scheduledRule ? ` + ${scheduledRule.name}` : ""}` : scheduledRule?.name ?? null;
-    await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${input.quantity}` }).where(eq(products.id, input.productId));
+    await tx.update(products).set({ stockQuantity: sql2`${products.stockQuantity} - ${input.quantity}` }).where(eq(products.id, input.productId));
     const matchingItems = await tx.select().from(tabItems).where(and(eq(tabItems.tabId, input.tabId), eq(tabItems.productId, input.productId)));
     const existing = matchingItems.find((item) => item.unitPriceCents === unitPriceCents && item.discountReason === discountReason);
     if (existing) {
       await tx.update(tabItems).set({
-        quantity: sql`${tabItems.quantity} + ${input.quantity}`,
+        quantity: sql2`${tabItems.quantity} + ${input.quantity}`,
         unitPriceCents,
         discountPercent,
         discountReason,
@@ -1051,7 +1084,7 @@ async function addTabItem(input, userId, localRole2) {
     await tx.insert(stockMovements).values({ productId: input.productId, quantity: input.quantity, direction: "out", reason: "Venda em comanda", referenceType: "tab", referenceId: input.tabId, createdBy: userId });
     const currentItems = await tx.select({ quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents }).from(tabItems).where(eq(tabItems.tabId, input.tabId));
     const currentTotals = tabTotals(currentItems, tab[0]);
-    await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
+    await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql2`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
     await tx.insert(auditLogs).values({ userId, action: "ADD_ITEM", entityType: "tab", entityId: input.tabId, description: `Adicionou ${input.quantity}x ${product[0].name}` });
   });
 }
@@ -1061,11 +1094,11 @@ async function setTabItemQuantity(input, userId) {
   return db.transaction(async (tx) => {
     const item = await tx.select().from(tabItems).where(eq(tabItems.id, input.itemId)).limit(1);
     if (!item[0]) throw new Error("Item n\xE3o encontrado");
-    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${item[0].tabId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM tabs WHERE id = ${item[0].tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, item[0].tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
     const delta = input.quantity - item[0].quantity;
-    await tx.execute(sql`SELECT id FROM products WHERE id = ${item[0].productId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM products WHERE id = ${item[0].productId} FOR UPDATE`);
     const product = await tx.select().from(products).where(eq(products.id, item[0].productId)).limit(1);
     const systemSettings = await tx.select().from(settings).limit(1);
     if (!product[0]) throw new Error("Produto n\xE3o encontrado");
@@ -1076,7 +1109,7 @@ async function setTabItemQuantity(input, userId) {
       await tx.update(tabItems).set({ quantity: input.quantity, note: input.note ?? item[0].note }).where(eq(tabItems.id, item[0].id));
     }
     if (delta !== 0) {
-      await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${delta}` }).where(eq(products.id, product[0].id));
+      await tx.update(products).set({ stockQuantity: sql2`${products.stockQuantity} - ${delta}` }).where(eq(products.id, product[0].id));
       await tx.insert(stockMovements).values({
         productId: product[0].id,
         quantity: Math.abs(delta),
@@ -1089,7 +1122,7 @@ async function setTabItemQuantity(input, userId) {
     }
     const currentItems = await tx.select({ quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents }).from(tabItems).where(eq(tabItems.tabId, item[0].tabId));
     const currentTotals = tabTotals(currentItems, tab[0]);
-    await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, item[0].tabId));
+    await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql2`${tabs.version} + 1` }).where(eq(tabs.id, item[0].tabId));
     await tx.insert(auditLogs).values({ userId, action: input.quantity === 0 ? "REMOVE_ITEM" : "UPDATE_ITEM", entityType: "tab", entityId: item[0].tabId, description: `Atualizou ${item[0].productName}` });
   });
 }
@@ -1097,7 +1130,7 @@ async function setTabCharges(input, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
     const items = await tx.select().from(tabItems).where(eq(tabItems.tabId, input.tabId));
@@ -1105,7 +1138,7 @@ async function setTabCharges(input, userId) {
     const totals = tabTotals(items, { tipPercent: input.tipPercent });
     const paidCents = paymentsRows.reduce((sum, payment) => sum + payment.amountCents, 0);
     if (paidCents > totals.totalCents) throw new Error("O novo total n\xE3o pode ficar abaixo do valor j\xE1 pago");
-    await tx.update(tabs).set({ discountPercent: 0, discountCents: 0, tipPercent: input.tipPercent, tipCents: totals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
+    await tx.update(tabs).set({ discountPercent: 0, discountCents: 0, tipPercent: input.tipPercent, tipCents: totals.tipCents, version: sql2`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
     await tx.insert(auditLogs).values({ userId, action: "UPDATE_TAB_CHARGES", entityType: "tab", entityId: input.tabId, description: `Aplicou 10% de gorjeta` });
     return { ...totals, paidCents, balanceCents: totals.totalCents - paidCents };
   });
@@ -1116,7 +1149,7 @@ async function registerPayment(input, userId) {
   return db.transaction(async (tx) => {
     const previous = await tx.select().from(payments).where(eq(payments.requestKey, input.requestKey)).limit(1);
     if (previous[0]) return { paymentId: previous[0].id, duplicate: true };
-    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda est\xE1 encerrada");
     const itemRows = await tx.select().from(tabItems).where(eq(tabItems.tabId, input.tabId));
@@ -1136,7 +1169,7 @@ async function closeTab(tabId, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM tabs WHERE id = ${tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda j\xE1 est\xE1 encerrada");
     const [itemRows, paymentRows] = await Promise.all([
@@ -1145,7 +1178,7 @@ async function closeTab(tabId, userId) {
     ]);
     const balance = tabTotals(itemRows, tab[0]).totalCents - paymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
     if (balance !== 0) throw new Error(`N\xE3o \xE9 poss\xEDvel encerrar: saldo pendente de R$ ${(balance / 100).toFixed(2)}`);
-    await tx.update(tabs).set({ status: "closed", closedAt: /* @__PURE__ */ new Date(), closedBy: userId, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
+    await tx.update(tabs).set({ status: "closed", closedAt: /* @__PURE__ */ new Date(), closedBy: userId, version: sql2`${tabs.version} + 1` }).where(eq(tabs.id, tabId));
     await tx.update(loungeTables).set({ status: "free", activeTabId: null }).where(eq(loungeTables.id, tab[0].tableId));
     await tx.insert(auditLogs).values({ userId, action: "CLOSE_TAB", entityType: "tab", entityId: tabId, description: `Encerrou a comanda ${tab[0].tabCode}` });
   });
@@ -1221,13 +1254,13 @@ async function adjustStock(input, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM products WHERE id = ${input.productId} FOR UPDATE`);
+    await tx.execute(sql2`SELECT id FROM products WHERE id = ${input.productId} FOR UPDATE`);
     const product = await tx.select().from(products).where(eq(products.id, input.productId)).limit(1);
     if (!product[0]) throw new Error("Produto n\xE3o encontrado");
     const change = input.direction === "in" ? input.quantity : -input.quantity;
     const systemSettings = await tx.select().from(settings).limit(1);
     if (change < 0 && systemSettings[0]?.preventNegativeStock && product[0].stockQuantity + change < 0) throw new Error("Ajuste resultaria em estoque negativo");
-    await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} + ${change}` }).where(eq(products.id, input.productId));
+    await tx.update(products).set({ stockQuantity: sql2`${products.stockQuantity} + ${change}` }).where(eq(products.id, input.productId));
     await tx.insert(stockMovements).values({ productId: input.productId, quantity: input.quantity, direction: input.direction, reason: input.reason, createdBy: userId });
     await tx.insert(auditLogs).values({ userId, action: "ADJUST_STOCK", entityType: "product", entityId: input.productId, description: `${input.direction === "in" ? "Entrada" : "Sa\xEDda"}: ${input.reason}` });
   });
@@ -1347,34 +1380,83 @@ async function listProductHistory(productId, from, to) {
 async function getReportSummary(from, to) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
-  const paymentFilters = [from ? gte(payments.createdAt, from) : void 0, to ? lte(payments.createdAt, to) : void 0].filter(Boolean);
-  const productFilters = [from ? gte(tabItems.createdAt, from) : void 0, to ? lte(tabItems.createdAt, to) : void 0].filter(Boolean);
+  const closedTabFilters = [eq(tabs.status, "closed"), from ? gte(tabs.closedAt, from) : void 0, to ? lte(tabs.closedAt, to) : void 0].filter(Boolean);
   const expenseFilters = [from ? gte(expenses.occurredAt, from) : void 0, to ? lte(expenses.occurredAt, to) : void 0].filter(Boolean);
-  const auditFilters = [eq(auditLogs.entityType, "tab"), inArray(auditLogs.action, ["ADD_ITEM", "UPDATE_ITEM", "REMOVE_ITEM"]), from ? gte(auditLogs.createdAt, from) : void 0, to ? lte(auditLogs.createdAt, to) : void 0].filter(Boolean);
-  const [paymentRows, productRows, expenseRows, launchRows] = await Promise.all([
-    db.select({ amountCents: payments.amountCents, method: payments.method, tabId: payments.tabId }).from(payments).where(paymentFilters.length ? and(...paymentFilters) : void 0),
-    db.select({ productName: tabItems.productName, quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents, unitCostCents: tabItems.unitCostCents }).from(tabItems).where(productFilters.length ? and(...productFilters) : void 0),
-    db.select({ amountCents: expenses.amountCents }).from(expenses).where(expenseFilters.length ? and(...expenseFilters) : void 0),
-    db.select({ id: auditLogs.id, action: auditLogs.action, description: auditLogs.description, createdAt: auditLogs.createdAt, userName: users.name }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).where(and(...auditFilters)).orderBy(desc(auditLogs.createdAt)).limit(300)
+  const paymentFilters = [from ? gte(payments.createdAt, from) : void 0, to ? lte(payments.createdAt, to) : void 0].filter(Boolean);
+  const [closedTabs, expenseRows] = await Promise.all([
+    db.select({ id: tabs.id, tabCode: tabs.tabCode, customerName: tabs.customerName, closedAt: tabs.closedAt, tipCents: tabs.tipCents, discountCents: tabs.discountCents, tableNumber: loungeTables.number }).from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).where(and(...closedTabFilters)).orderBy(desc(tabs.closedAt)),
+    db.select({ amountCents: expenses.amountCents }).from(expenses).where(expenseFilters.length ? and(...expenseFilters) : void 0)
+  ]);
+  const tabIds = closedTabs.map((tab) => tab.id);
+  const [salesPaymentRows, productRows, periodPaymentRows] = await Promise.all([
+    tabIds.length ? db.select({ tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method, createdAt: payments.createdAt }).from(payments).where(inArray(payments.tabId, tabIds)).orderBy(asc(payments.createdAt)) : Promise.resolve([]),
+    tabIds.length ? db.select({ id: tabItems.id, tabId: tabItems.tabId, productName: tabItems.productName, quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents, unitCostCents: tabItems.unitCostCents }).from(tabItems).where(inArray(tabItems.tabId, tabIds)).orderBy(asc(tabItems.id)) : Promise.resolve([]),
+    db.select({ tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method, createdAt: payments.createdAt, tabCode: tabs.tabCode, tabStatus: tabs.status, tableNumber: loungeTables.number }).from(payments).innerJoin(tabs, eq(payments.tabId, tabs.id)).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).where(paymentFilters.length ? and(...paymentFilters) : void 0).orderBy(desc(payments.createdAt))
   ]);
   const productsMap = /* @__PURE__ */ new Map();
-  for (const row of productRows) {
-    const current = productsMap.get(row.productName) ?? { productName: row.productName, quantity: 0, totalCents: 0 };
-    current.quantity += row.quantity;
-    current.totalCents += row.quantity * row.unitPriceCents;
-    productsMap.set(row.productName, current);
+  const itemsByTab = /* @__PURE__ */ new Map();
+  for (const item of productRows) {
+    const items = itemsByTab.get(item.tabId) ?? [];
+    items.push(item);
+    itemsByTab.set(item.tabId, items);
+    const current = productsMap.get(item.productName) ?? { productName: item.productName, quantity: 0, totalCents: 0 };
+    current.quantity += item.quantity;
+    current.totalCents += item.quantity * item.unitPriceCents;
+    productsMap.set(item.productName, current);
   }
+  const paymentsByTab = /* @__PURE__ */ new Map();
   const paymentMap = /* @__PURE__ */ new Map();
-  for (const row of paymentRows) {
-    const current = paymentMap.get(row.method) ?? { method: row.method, totalCents: 0, count: 0 };
-    current.totalCents += row.amountCents;
-    current.count += 1;
-    paymentMap.set(row.method, current);
+  for (const payment of salesPaymentRows) {
+    const paymentsForTab = paymentsByTab.get(payment.tabId) ?? [];
+    paymentsForTab.push(payment);
+    paymentsByTab.set(payment.tabId, paymentsForTab);
   }
-  const salesCents = paymentRows.reduce((sum, row) => sum + row.amountCents, 0);
-  const costCents = productRows.reduce((sum, row) => sum + row.quantity * row.unitCostCents, 0);
-  const expensesCents = expenseRows.reduce((sum, row) => sum + row.amountCents, 0);
-  return { salesCents, salesCount: new Set(paymentRows.map((row) => row.tabId)).size, productUnits: productRows.reduce((sum, row) => sum + row.quantity, 0), costCents, expensesCents, resultCents: salesCents - expensesCents - costCents, paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents), products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity), launches: launchRows };
+  for (const payment of periodPaymentRows) {
+    const current = paymentMap.get(payment.method) ?? { method: payment.method, totalCents: 0, count: 0 };
+    current.totalCents += payment.amountCents;
+    current.count += 1;
+    paymentMap.set(payment.method, current);
+  }
+  const sales = closedTabs.map((tab) => {
+    const items = itemsByTab.get(tab.id) ?? [];
+    const paymentsForTab = paymentsByTab.get(tab.id) ?? [];
+    const subtotalCents = items.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
+    const salesCents2 = Math.max(0, subtotalCents + tab.tipCents - tab.discountCents);
+    const receivedCents2 = paymentsForTab.reduce((sum, payment) => sum + payment.amountCents, 0);
+    return {
+      id: tab.id,
+      tabCode: tab.tabCode,
+      tableNumber: tab.tableNumber,
+      customerName: tab.customerName,
+      closedAt: tab.closedAt,
+      subtotalCents,
+      tipCents: tab.tipCents,
+      discountCents: tab.discountCents,
+      salesCents: salesCents2,
+      receivedCents: receivedCents2,
+      balanceCents: Math.max(0, salesCents2 - receivedCents2),
+      items: items.map(({ id, productName, quantity, unitPriceCents, unitCostCents }) => ({ id, productName, quantity, unitPriceCents, totalCents: quantity * unitPriceCents, costCents: quantity * unitCostCents })),
+      payments: paymentsForTab.map(({ amountCents, method, createdAt }) => ({ amountCents, method, createdAt }))
+    };
+  });
+  const salesCents = sales.reduce((sum, tab) => sum + tab.salesCents, 0);
+  const receivedCents = periodPaymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
+  const costCents = productRows.reduce((sum, item) => sum + item.quantity * item.unitCostCents, 0);
+  const expensesCents = expenseRows.reduce((sum, expense) => sum + expense.amountCents, 0);
+  return {
+    salesCents,
+    receivedCents,
+    outstandingCents: sales.reduce((sum, tab) => sum + tab.balanceCents, 0),
+    salesCount: sales.length,
+    productUnits: productRows.reduce((sum, item) => sum + item.quantity, 0),
+    costCents,
+    expensesCents,
+    resultCents: salesCents - expensesCents - costCents,
+    paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents),
+    products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity),
+    sales,
+    receipts: periodPaymentRows.map(({ tabId, amountCents, method, createdAt, tabCode, tabStatus, tableNumber }) => ({ tabId, amountCents, method, createdAt, tabCode, tabStatus, tableNumber }))
+  };
 }
 async function listUserAccess() {
   const db = await getDb();
@@ -1410,11 +1492,13 @@ async function createProductCategory(name, userId) {
   return { id, name: name.trim() };
 }
 async function listProductPriceRules() {
+  await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
-  return db.select({ id: productPriceRules.id, productId: productPriceRules.productId, productName: products.name, name: productPriceRules.name, startTime: productPriceRules.startTime, endTime: productPriceRules.endTime, priceCents: productPriceRules.priceCents, active: productPriceRules.active }).from(productPriceRules).innerJoin(products, eq(productPriceRules.productId, products.id)).orderBy(asc(products.name), asc(productPriceRules.startTime));
+  return db.select({ id: productPriceRules.id, productId: productPriceRules.productId, productName: products.name, name: productPriceRules.name, startTime: productPriceRules.startTime, endTime: productPriceRules.endTime, daysOfWeek: productPriceRules.daysOfWeek, weekdaysMask: productPriceRules.weekdaysMask, priceCents: productPriceRules.priceCents, active: productPriceRules.active }).from(productPriceRules).innerJoin(products, eq(productPriceRules.productId, products.id)).orderBy(asc(products.name), asc(productPriceRules.startTime));
 }
 async function createProductPriceRule(input, userId) {
+  await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   if (parseTime(input.startTime) === null || parseTime(input.endTime) === null || parseTime(input.startTime) === parseTime(input.endTime)) {
@@ -1422,10 +1506,41 @@ async function createProductPriceRule(input, userId) {
   }
   const product = await db.select().from(products).where(eq(products.id, input.productId)).limit(1);
   if (!product[0]) throw new Error("Produto n\xE3o encontrado");
-  const inserted = await db.insert(productPriceRules).values({ ...input, active: true, createdBy: userId }).returning({ id: productPriceRules.id });
+  const daysOfWeek = Array.from(new Set(input.daysOfWeek)).sort((a, b) => a - b);
+  if (!daysOfWeek.length || daysOfWeek.some((day) => !Number.isInteger(day) || day < 0 || day > 6) || input.weekdaysMask !== weekdaysToMask(daysOfWeek)) throw new Error("Os dias selecionados da promo\xE7\xE3o s\xE3o inv\xE1lidos");
+  const inserted = await db.insert(productPriceRules).values({ ...input, daysOfWeek, weekdaysMask: input.weekdaysMask, active: true, createdBy: userId }).returning({ id: productPriceRules.id });
   const id = Number(inserted[0].id);
-  await writeAudit(userId, "CREATE_PRICE_RULE", "product_price_rule", id, `Criou pre\xE7o programado para ${product[0].name}: ${input.startTime}-${input.endTime}`);
+  const dayNames = ["domingo", "segunda", "ter\xE7a", "quarta", "quinta", "sexta", "s\xE1bado"];
+  await writeAudit(userId, "CREATE_PRICE_RULE", "product_price_rule", id, `Criou pre\xE7o programado para ${product[0].name}: ${input.startTime}-${input.endTime} (${daysOfWeek.map((day) => dayNames[day]).join(", ")})`);
   return { id };
+}
+async function updateProductPriceRule(input, userId) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  if (parseTime(input.startTime) === null || parseTime(input.endTime) === null || parseTime(input.startTime) === parseTime(input.endTime)) {
+    throw new Error("Informe hor\xE1rios v\xE1lidos e diferentes para in\xEDcio e fim");
+  }
+  const daysOfWeek = Array.from(new Set(input.daysOfWeek)).sort((a, b) => a - b);
+  if (!daysOfWeek.length || daysOfWeek.some((day) => !Number.isInteger(day) || day < 0 || day > 6) || input.weekdaysMask !== weekdaysToMask(daysOfWeek)) throw new Error("Os dias selecionados da promo\xE7\xE3o s\xE3o inv\xE1lidos");
+  const product = await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.id, input.productId)).limit(1);
+  if (!product[0]) throw new Error("Produto n\xE3o encontrado");
+  const rule = await db.select({ id: productPriceRules.id }).from(productPriceRules).where(eq(productPriceRules.id, input.ruleId)).limit(1);
+  if (!rule[0]) throw new Error("Regra de pre\xE7o n\xE3o encontrada");
+  const result = await db.update(productPriceRules).set({
+    productId: input.productId,
+    name: input.name.trim(),
+    startTime: input.startTime,
+    endTime: input.endTime,
+    daysOfWeek,
+    weekdaysMask: input.weekdaysMask,
+    priceCents: input.priceCents
+  }).where(eq(productPriceRules.id, input.ruleId));
+  const affected = result.rowCount ?? 0;
+  if (affected !== 1) throw new Error("Regra de pre\xE7o n\xE3o encontrada");
+  const dayNames = ["domingo", "segunda", "ter\xE7a", "quarta", "quinta", "sexta", "s\xE1bado"];
+  await writeAudit(userId, "UPDATE_PRICE_RULE", "product_price_rule", input.ruleId, `Editou o pre\xE7o programado de ${product[0].name}: ${input.startTime}-${input.endTime} (${daysOfWeek.map((day) => dayNames[day]).join(", ")}) por R$ ${(input.priceCents / 100).toFixed(2).replace(".", ",")}`);
+  return { success: true };
 }
 async function setProductPriceRuleActive(ruleId, active, userId) {
   const db = await getDb();
@@ -1469,7 +1584,7 @@ async function updateTableLimit(maxTables, userId) {
   const normalized = Math.min(100, Math.max(1, Math.round(maxTables)));
   await ensureInitialData();
   return db.transaction(async (tx) => {
-    const openOutsideLimit = await tx.select({ id: tabs.id, number: loungeTables.number }).from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).where(and(eq(tabs.status, "open"), sql`${loungeTables.number} > ${normalized}`)).limit(1);
+    const openOutsideLimit = await tx.select({ id: tabs.id, number: loungeTables.number }).from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).where(and(eq(tabs.status, "open"), sql2`${loungeTables.number} > ${normalized}`)).limit(1);
     if (openOutsideLimit[0]) throw new Error(`Feche ou transfira a comanda da mesa ${openOutsideLimit[0].number} antes de reduzir o limite`);
     const existingTables = await tx.select({ number: loungeTables.number }).from(loungeTables).orderBy(asc(loungeTables.number));
     const existingNumbers = new Set(existingTables.map((table) => table.number));
@@ -1762,7 +1877,7 @@ var appRouter = router({
     })
   }),
   reports: router({
-    summary: protectedProcedure.input(z2.object({ from: z2.date().optional(), to: z2.date().optional() }).optional()).query(async ({ ctx, input }) => {
+    summary: protectedProcedure.input(z2.object({ from: z2.date().optional(), to: z2.date().optional() }).refine(({ from, to }) => !from || !to || from <= to, { message: "A data inicial deve ser anterior ou igual \xE0 data final" }).optional()).query(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return getReportSummary(input?.from, input?.to);
     })
@@ -1772,9 +1887,13 @@ var appRouter = router({
       await requireRole(ctx, ["administrator", "manager"]);
       return listProductPriceRules();
     }),
-    createRule: protectedProcedure.input(z2.object({ productId: z2.number().int().positive(), name: z2.string().min(2).max(140), startTime: z2.string().regex(/^\d{2}:\d{2}$/), endTime: z2.string().regex(/^\d{2}:\d{2}$/), priceCents: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    createRule: protectedProcedure.input(z2.object({ productId: z2.number().int().positive(), name: z2.string().min(2).max(140), startTime: z2.string().regex(/^\d{2}:\d{2}$/), endTime: z2.string().regex(/^\d{2}:\d{2}$/), daysOfWeek: z2.array(z2.number().int().min(0).max(6)).min(1).max(7).refine((days) => new Set(days).size === days.length, { message: "Remova dias repetidos" }), weekdaysMask: z2.number().int().min(1).max(127), priceCents: z2.number().int().positive() }).refine((input) => weekdaysToMask(input.daysOfWeek) === input.weekdaysMask, { message: "Os dias selecionados n\xE3o correspondem \xE0 regra" })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return createProductPriceRule(input, ctx.user.id);
+    }),
+    updateRule: protectedProcedure.input(z2.object({ ruleId: z2.number().int().positive(), productId: z2.number().int().positive(), name: z2.string().trim().min(2).max(140), startTime: z2.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/), endTime: z2.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/), daysOfWeek: z2.array(z2.number().int().min(0).max(6)).min(1).max(7).refine((days) => new Set(days).size === days.length, { message: "Remova dias repetidos" }), weekdaysMask: z2.number().int().min(1).max(127), priceCents: z2.number().int().positive() }).refine((input) => weekdaysToMask(input.daysOfWeek) === input.weekdaysMask, { message: "Os dias selecionados n\xE3o correspondem \xE0 regra" })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return updateProductPriceRule(input, ctx.user.id);
     }),
     setActive: protectedProcedure.input(z2.object({ ruleId: z2.number().int().positive(), active: z2.boolean() })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
