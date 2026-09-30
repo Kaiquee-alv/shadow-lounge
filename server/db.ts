@@ -784,12 +784,13 @@ export async function listCategories() {
   return db.select({ id: productCategories.id, name: productCategories.name }).from(productCategories).where(eq(productCategories.active, true)).orderBy(asc(productCategories.name));
 }
 
-export async function saveProduct(input: { id?: number; name: string; code: string; categoryId?: number; unit: string; costCents: number; priceCents: number; stockQuantity: number; minimumStock: number; active: boolean; notes?: string }, userId: number) {
+export async function saveProduct(input: { id?: number; name: string; code: string; categoryId?: number; unit: string; costCents: number; priceCents: number; stockQuantity?: number; minimumStock: number; active: boolean; notes?: string }, userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
-  const data = { ...input, categoryId: input.categoryId ?? null, notes: input.notes || null };
+  const data = { ...input, stockQuantity: input.stockQuantity ?? 0, categoryId: input.categoryId ?? null, notes: input.notes || null };
   if (input.id) {
-    await db.update(products).set(data).where(eq(products.id, input.id));
+    const { stockQuantity: _initialStockQuantity, ...updateData } = data;
+    await db.update(products).set(updateData).where(eq(products.id, input.id));
     await writeAudit(userId, "UPDATE_PRODUCT", "product", input.id, `Atualizou ${input.name}`);
     return { id: input.id };
   }

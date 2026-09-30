@@ -215,7 +215,11 @@ export const appRouter = router({
     saveProduct: protectedProcedure.input(z.object({
       id: z.number().int().positive().optional(),
       name: z.string().min(2).max(160), code: z.string().min(2).max(64), categoryId: z.number().int().positive().optional(), unit: z.string().min(1).max(24),
-      costCents: z.number().int().min(0), priceCents: z.number().int().min(0), stockQuantity: z.number().int().min(0), minimumStock: z.number().int().min(0), active: z.boolean(), notes: z.string().max(2000).optional(),
+      costCents: z.number().int().min(0), priceCents: z.number().int().min(0), stockQuantity: z.number().int().optional(), minimumStock: z.number().int().min(0), active: z.boolean(), notes: z.string().max(2000).optional(),
+    }).superRefine((input, refinement) => {
+      if (!input.id && input.stockQuantity !== undefined && input.stockQuantity < 0) {
+        refinement.addIssue({ code: "custom", path: ["stockQuantity"], message: "O estoque inicial não pode ser negativo" });
+      }
     })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return saveProduct(input, ctx.user.id);

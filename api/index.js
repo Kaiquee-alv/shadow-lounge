@@ -1213,9 +1213,10 @@ async function listCategories() {
 async function saveProduct(input, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
-  const data = { ...input, categoryId: input.categoryId ?? null, notes: input.notes || null };
+  const data = { ...input, stockQuantity: input.stockQuantity ?? 0, categoryId: input.categoryId ?? null, notes: input.notes || null };
   if (input.id) {
-    await db.update(products).set(data).where(eq(products.id, input.id));
+    const { stockQuantity: _initialStockQuantity, ...updateData } = data;
+    await db.update(products).set(updateData).where(eq(products.id, input.id));
     await writeAudit(userId, "UPDATE_PRODUCT", "product", input.id, `Atualizou ${input.name}`);
     return { id: input.id };
   }
@@ -1803,10 +1804,14 @@ var appRouter = router({
       unit: z2.string().min(1).max(24),
       costCents: z2.number().int().min(0),
       priceCents: z2.number().int().min(0),
-      stockQuantity: z2.number().int().min(0),
+      stockQuantity: z2.number().int().optional(),
       minimumStock: z2.number().int().min(0),
       active: z2.boolean(),
       notes: z2.string().max(2e3).optional()
+    }).superRefine((input, refinement) => {
+      if (!input.id && input.stockQuantity !== void 0 && input.stockQuantity < 0) {
+        refinement.addIssue({ code: "custom", path: ["stockQuantity"], message: "O estoque inicial n\xE3o pode ser negativo" });
+      }
     })).mutation(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
       return saveProduct(input, ctx.user.id);
