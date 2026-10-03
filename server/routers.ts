@@ -8,6 +8,7 @@ import { protectedProcedure, publicProcedure, router } from "./_core/trpc.js";
 import {
   addTabItem,
   adjustStock,
+  adjustTabValue,
   closeTab,
   createExpense,
   ensureInitialData,
@@ -194,6 +195,14 @@ export const appRouter = router({
     setCharges: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), tipPercent: z.union([z.literal(0), z.literal(10)]) })).mutation(async ({ ctx, input }) => {
       await operator(ctx);
       return setTabCharges(input, ctx.user.id);
+    }),
+    adjustTabValue: protectedProcedure.input(z.object({
+      tabId: z.number().int().positive(),
+      newTotalCents: z.number().int().min(0).max(100_000_000),
+      reason: z.string().trim().min(5).max(500),
+    })).mutation(async ({ ctx, input }) => {
+      await requireRole(ctx, ["administrator", "manager"]);
+      return adjustTabValue(input, ctx.user.id);
     }),
   }),
   inventory: router({

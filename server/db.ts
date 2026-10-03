@@ -25,6 +25,7 @@ import { ENV } from "./_core/env.js";
 import { isValidCpf, normalizeCpf } from "@shared/cpf";
 import { calculateReportFinancialTotals } from "./report-financial-utils.js";
 import { priceRuleAppliesAt, saoPauloClock, timeInWindow, weekdaysFromMask, weekdaysToMask } from "./price-rule-utils.js";
+import { planTabTotalAdjustment } from "./tab-adjustment-utils.js";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _pool: Pool | null = null;
@@ -87,6 +88,8 @@ export async function ensureInitialData() {
 
   // Mantém instalações existentes compatíveis com o campo adicionado depois do schema inicial.
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerName" varchar(120)`);
+  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "manualAdjustmentCents" integer NOT NULL DEFAULT 0`);
+  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "adjustmentReason" varchar(500)`);
   await db.execute(sql`CREATE TABLE IF NOT EXISTS "customers" ("id" serial PRIMARY KEY, "name" varchar(160) NOT NULL, "cpf" varchar(11) NOT NULL, "phone" varchar(30), "notes" varchar(500), "active" boolean NOT NULL DEFAULT true, "createdAt" timestamp NOT NULL DEFAULT now(), "updatedAt" timestamp NOT NULL DEFAULT now())`);
   await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "customers_cpf_unique" ON "customers" ("cpf")`);
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerId" integer REFERENCES "customers"("id")`);
@@ -305,13 +308,14 @@ function centsOf(items: Array<{ quantity: number; unitPriceCents: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
 }
 
-function tabTotals(items: Array<{ quantity: number; unitPriceCents: number }>, tab: { tipPercent?: number; tipCents?: number }) {
+function tabTotals(items: Array<{ quantity: number; unitPriceCents: number }>, tab: { tipPercent?: number; tipCents?: number; manualAdjustmentCents?: number }) {
   const subtotalCents = centsOf(items);
   const discountCents = 0;
   // tipCents é um valor derivado: sempre recalcular com base nos itens atuais.
   // Isso evita manter gorjeta residual após a remoção do último item da comanda.
   const tipCents = Math.round(subtotalCents * (tab.tipPercent ?? 0) / 100);
-  return { subtotalCents, discountCents, tipCents, totalCents: subtotalCents + tipCents };
+  const manualAdjustmentCents = tab.manualAdjustmentCents ?? 0;
+  return { subtotalCents, discountCents, tipCents, manualAdjustmentCents, totalCents: Math.max(0, subtotalCents + tipCents + manualAdjustmentCents) };
 }
 
 function parseTime(value: string) {
@@ -375,6 +379,8 @@ export async function getTabDetails(tabId: number) {
     discountCents: tabs.discountCents,
     tipPercent: tabs.tipPercent,
     tipCents: tabs.tipCents,
+    manualAdjustmentCents: tabs.manualAdjustmentCents,
+    adjustmentReason: tabs.adjustmentReason,
     tableNumber: loungeTables.number,
     tableId: loungeTables.id,
     openedByName: users.name,
@@ -409,7 +415,7 @@ export async function getTabDetails(tabId: number) {
       description: auditLogs.description,
       createdAt: auditLogs.createdAt,
       userName: users.name,
-    }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).where(and(eq(auditLogs.entityType, "tab"), eq(auditLogs.entityId, tabId), inArray(auditLogs.action, ["ADD_ITEM", "UPDATE_ITEM", "REMOVE_ITEM"]))).orderBy(desc(auditLogs.createdAt)).limit(100),
+    }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).where(and(eq(auditLogs.entityType, "tab"), eq(auditLogs.entityId, tabId), inArray(auditLogs.action, ["ADD_ITEM", "UPDATE_ITEM", "REMOVE_ITEM", "ADJUST_TAB_TOTAL"]))).orderBy(desc(auditLogs.createdAt)).limit(100),
   ]);
   const totals = tabTotals(items, tab[0]);
   const totalCents = totals.totalCents;
@@ -688,6 +694,9 @@ export async function setTabItemQuantity(input: { itemId: number; quantity: numb
     }
     const currentItems = await tx.select({ quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents }).from(tabItems).where(eq(tabItems.tabId, item[0].tabId));
     const currentTotals = tabTotals(currentItems, tab[0]);
+    const paymentsRows = await tx.select().from(payments).where(eq(payments.tabId, item[0].tabId));
+    const paidCents = paymentsRows.reduce((sum, payment) => sum + payment.amountCents, 0);
+    if (currentTotals.totalCents < paidCents) throw new Error("Não é possível reduzir a comanda abaixo do valor já pago");
     await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, item[0].tabId));
     await tx.insert(auditLogs).values({ userId, action: input.quantity === 0 ? "REMOVE_ITEM" : "UPDATE_ITEM", entityType: "tab", entityId: item[0].tabId, description: `Atualizou ${item[0].productName}` });
   });
@@ -702,12 +711,48 @@ export async function setTabCharges(input: { tabId: number; tipPercent: 0 | 10 }
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
     const items = await tx.select().from(tabItems).where(eq(tabItems.tabId, input.tabId));
     const paymentsRows = await tx.select().from(payments).where(eq(payments.tabId, input.tabId));
-    const totals = tabTotals(items, { tipPercent: input.tipPercent });
+    const totals = tabTotals(items, { ...tab[0], tipPercent: input.tipPercent });
     const paidCents = paymentsRows.reduce((sum, payment) => sum + payment.amountCents, 0);
     if (paidCents > totals.totalCents) throw new Error("O novo total não pode ficar abaixo do valor já pago");
     await tx.update(tabs).set({ discountPercent: 0, discountCents: 0, tipPercent: input.tipPercent, tipCents: totals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
     await tx.insert(auditLogs).values({ userId, action: "UPDATE_TAB_CHARGES", entityType: "tab", entityId: input.tabId, description: `Aplicou 10% de gorjeta` });
     return { ...totals, paidCents, balanceCents: totals.totalCents - paidCents };
+  });
+}
+
+export async function adjustTabValue(input: { tabId: number; newTotalCents: number; reason: string }, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
+    const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
+    if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
+    const [items, paymentRows] = await Promise.all([
+      tx.select().from(tabItems).where(eq(tabItems.tabId, input.tabId)),
+      tx.select().from(payments).where(eq(payments.tabId, input.tabId)),
+    ]);
+    const baseTotals = tabTotals(items, { ...tab[0], manualAdjustmentCents: 0 });
+    const paidCents = paymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
+    const plan = planTabTotalAdjustment({
+      baseTotalCents: baseTotals.totalCents,
+      currentAdjustmentCents: tab[0].manualAdjustmentCents,
+      newTotalCents: input.newTotalCents,
+      paidCents,
+    });
+    const reason = input.reason.trim();
+    await tx.update(tabs).set({
+      manualAdjustmentCents: plan.adjustmentCents,
+      adjustmentReason: reason,
+      version: sql`${tabs.version} + 1`,
+    }).where(eq(tabs.id, input.tabId));
+    await tx.insert(auditLogs).values({
+      userId,
+      action: "ADJUST_TAB_TOTAL",
+      entityType: "tab",
+      entityId: input.tabId,
+      description: `Alterou o total da comanda ${tab[0].tabCode} de R$ ${(plan.currentTotalCents / 100).toFixed(2)} para R$ ${(plan.newTotalCents / 100).toFixed(2)}. Justificativa: ${reason}`,
+    });
+    return { ...tabTotals(items, { ...tab[0], manualAdjustmentCents: plan.adjustmentCents }), paidCents, balanceCents: plan.newTotalCents - paidCents };
   });
 }
 
@@ -967,7 +1012,7 @@ export async function getReportSummary(from?: Date, to?: Date) {
   const expenseFilters = [from ? gte(expenses.occurredAt, from) : undefined, to ? lte(expenses.occurredAt, to) : undefined].filter(Boolean);
   const paymentFilters = [from ? gte(payments.createdAt, from) : undefined, to ? lte(payments.createdAt, to) : undefined].filter(Boolean);
   const [closedTabs, expenseRows] = await Promise.all([
-    db.select({ id: tabs.id, tabCode: tabs.tabCode, customerName: tabs.customerName, closedAt: tabs.closedAt, tipCents: tabs.tipCents, discountCents: tabs.discountCents, tableNumber: loungeTables.number })
+    db.select({ id: tabs.id, tabCode: tabs.tabCode, customerName: tabs.customerName, closedAt: tabs.closedAt, tipCents: tabs.tipCents, discountCents: tabs.discountCents, manualAdjustmentCents: tabs.manualAdjustmentCents, adjustmentReason: tabs.adjustmentReason, tableNumber: loungeTables.number })
       .from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).where(and(...closedTabFilters)).orderBy(desc(tabs.closedAt)),
     db.select({ amountCents: expenses.amountCents }).from(expenses).where(expenseFilters.length ? and(...expenseFilters) : undefined),
   ]);
@@ -1010,11 +1055,12 @@ export async function getReportSummary(from?: Date, to?: Date) {
     const items = itemsByTab.get(tab.id) ?? [];
     const paymentsForTab = paymentsByTab.get(tab.id) ?? [];
     const subtotalCents = items.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
-    const salesCents = Math.max(0, subtotalCents + tab.tipCents - tab.discountCents);
+    const salesCents = Math.max(0, subtotalCents + tab.tipCents - tab.discountCents + tab.manualAdjustmentCents);
     const receivedCents = paymentsForTab.reduce((sum, payment) => sum + payment.amountCents, 0);
     return {
       id: tab.id, tabCode: tab.tabCode, tableNumber: tab.tableNumber, customerName: tab.customerName,
       closedAt: tab.closedAt, subtotalCents, tipCents: tab.tipCents, discountCents: tab.discountCents,
+      manualAdjustmentCents: tab.manualAdjustmentCents, adjustmentReason: tab.adjustmentReason,
       salesCents, receivedCents, balanceCents: Math.max(0, salesCents - receivedCents),
       items: items.map(({ id, productName, quantity, unitPriceCents, unitCostCents }) => ({ id, productName, quantity, unitPriceCents, totalCents: quantity * unitPriceCents, costCents: quantity * unitCostCents })),
       payments: paymentsForTab.map(({ amountCents, method, createdAt }) => ({ amountCents, method, createdAt })),

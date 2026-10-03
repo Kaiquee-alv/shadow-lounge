@@ -176,6 +176,8 @@ export const tabs = pgTable(
     discountCents: integer("discountCents").default(0).notNull(),
     tipPercent: integer("tipPercent").default(0).notNull(),
     tipCents: integer("tipCents").default(0).notNull(),
+    manualAdjustmentCents: integer("manualAdjustmentCents").default(0).notNull(),
+    adjustmentReason: varchar("adjustmentReason", { length: 500 }),
     version: integer("version").default(1).notNull(),
   },
   (table) => [
