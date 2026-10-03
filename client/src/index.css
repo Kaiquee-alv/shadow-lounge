@@ -582,3 +582,7 @@ h3 { font-size: 17px; font-weight: 700; }
 .sale-adjustment-row { margin: 7px 0; padding: 9px 10px; display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; color: #d8d2c9; background: rgba(218,165,73,.08); border: 1px solid rgba(218,165,73,.2); border-radius: 7px; font-size: 11px; }
 .sale-adjustment-row b { color: #edc367; }
 .sale-adjustment-row small { grid-column: 1 / -1; color: #a8a19a; font-size: 10px; }
+
+/* Mantém todas as opções da navegação acessíveis quando a sidebar excede a altura da tela. */
+.sidebar { overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-width: thin; scrollbar-color: #c6cbd4 transparent; }
+.sidebar nav { flex: 0 0 auto; }
