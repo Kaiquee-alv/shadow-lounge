@@ -293,7 +293,7 @@ export const appRouter = router({
   }),
   reports: router({
     summary: protectedProcedure.input(z.object({ from: z.date().optional(), to: z.date().optional() }).refine(({ from, to }) => !from || !to || from <= to, { message: "A data inicial deve ser anterior ou igual à data final" }).optional()).query(async ({ ctx, input }) => {
-      await requireRole(ctx, ["administrator", "manager"]);
+      await requireRole(ctx, ["administrator", "manager", "attendant"]);
       return getReportSummary(input?.from, input?.to);
     }),
   }),
@@ -345,7 +345,7 @@ export const appRouter = router({
   customers: router({
     list: protectedProcedure.query(async ({ ctx }) => { await operator(ctx); return listCustomers(); }),
     save: protectedProcedure.input(z.object({ id: z.number().int().positive().optional(), name: z.string().trim().min(2).max(160), cpf: z.string().min(11).max(18).refine(isValidCpf, "CPF inválido. Confira os 11 dígitos e tente novamente."), phone: z.string().max(30).optional(), notes: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => { await operator(ctx); return saveCustomer(input, ctx.user.id); }),
-    delete: protectedProcedure.input(z.object({ customerId: z.number().int().positive() })).mutation(async ({ ctx, input }) => { await requireRole(ctx, ["administrator", "manager"]); return deleteCustomer(input.customerId, ctx.user.id); }),
+    delete: protectedProcedure.input(z.object({ customerId: z.number().int().positive() })).mutation(async ({ ctx, input }) => { await requireRole(ctx, ["administrator", "manager", "attendant"]); return deleteCustomer(input.customerId, ctx.user.id); }),
   }),
 });
 

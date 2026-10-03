@@ -1982,7 +1982,7 @@ var appRouter = router({
   }),
   reports: router({
     summary: protectedProcedure.input(z2.object({ from: z2.date().optional(), to: z2.date().optional() }).refine(({ from, to }) => !from || !to || from <= to, { message: "A data inicial deve ser anterior ou igual \xE0 data final" }).optional()).query(async ({ ctx, input }) => {
-      await requireRole(ctx, ["administrator", "manager"]);
+      await requireRole(ctx, ["administrator", "manager", "attendant"]);
       return getReportSummary(input?.from, input?.to);
     })
   }),
@@ -2041,7 +2041,7 @@ var appRouter = router({
       return saveCustomer(input, ctx.user.id);
     }),
     delete: protectedProcedure.input(z2.object({ customerId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
-      await requireRole(ctx, ["administrator", "manager"]);
+      await requireRole(ctx, ["administrator", "manager", "attendant"]);
       return deleteCustomer(input.customerId, ctx.user.id);
     })
   })

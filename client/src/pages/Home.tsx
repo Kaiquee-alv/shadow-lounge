@@ -395,7 +395,7 @@ export default function Home() {
 
   const localRole = workspaceQuery.data?.localRole;
   const visibleNav = nav.filter((item) => {
-    if (localRole === "attendant") return item.id === "tables" || item.id === "customers";
+    if (localRole === "attendant") return item.id === "tables" || item.id === "customers" || item.id === "reports";
     if (localRole === "manager") return item.id !== "users";
     if (localRole === "administrator") return true;
     return item.id === "tables";
