@@ -22,6 +22,8 @@ import {
   users,
 } from "../drizzle/schema.js";
 import { ENV } from "./_core/env.js";
+import { isValidCpf, normalizeCpf } from "@shared/cpf";
+import { calculateReportFinancialTotals } from "./report-financial-utils.js";
 import { priceRuleAppliesAt, saoPauloClock, timeInWindow, weekdaysFromMask, weekdaysToMask } from "./price-rule-utils.js";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -435,10 +437,6 @@ export async function setTabCustomerName(tabId: number, customerName: string | n
   });
 }
 
-function normalizeCpf(cpf: string) {
-  return cpf.replace(/\D/g, "");
-}
-
 export async function listCustomers() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
@@ -450,7 +448,7 @@ export async function saveCustomer(input: { id?: number; name: string; cpf: stri
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   const cpf = normalizeCpf(input.cpf);
-  if (cpf.length !== 11) throw new Error("Informe um CPF válido com 11 dígitos");
+  if (!isValidCpf(cpf)) throw new Error("CPF inválido. Confira os 11 dígitos e tente novamente.");
   const name = input.name.trim();
   if (name.length < 2) throw new Error("Informe o nome do cliente");
   const data = { name, cpf, phone: input.phone?.trim() || null, notes: input.notes?.trim() || null, active: true, updatedAt: new Date() };
@@ -1022,14 +1020,13 @@ export async function getReportSummary(from?: Date, to?: Date) {
       payments: paymentsForTab.map(({ amountCents, method, createdAt }) => ({ amountCents, method, createdAt })),
     };
   });
-  const salesCents = sales.reduce((sum, tab) => sum + tab.salesCents, 0);
   const receivedCents = periodPaymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
-  const costCents = productRows.reduce((sum, item) => sum + item.quantity * item.unitCostCents, 0);
   const expensesCents = expenseRows.reduce((sum, expense) => sum + expense.amountCents, 0);
+  const financialTotals = calculateReportFinancialTotals(sales, productRows, expensesCents);
   return {
-    salesCents, receivedCents, outstandingCents: sales.reduce((sum, tab) => sum + tab.balanceCents, 0),
+    ...financialTotals, receivedCents, outstandingCents: sales.reduce((sum, tab) => sum + tab.balanceCents, 0),
     salesCount: sales.length, productUnits: productRows.reduce((sum, item) => sum + item.quantity, 0),
-    costCents, expensesCents, resultCents: salesCents - expensesCents - costCents,
+    expensesCents,
     paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents),
     products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity), sales,
     receipts: periodPaymentRows.map(({ tabId, amountCents, method, createdAt, tabCode, tabStatus, tableNumber }) => ({ tabId, amountCents, method, createdAt, tabCode, tabStatus, tableNumber })),

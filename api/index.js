@@ -29,6 +29,24 @@ var decodeOAuthState = (state) => {
   return { redirectUri: decoded };
 };
 
+// shared/cpf.ts
+function normalizeCpf(value) {
+  return value.replace(/\D/g, "");
+}
+function isValidCpf(value) {
+  const cpf = normalizeCpf(value);
+  if (!/^\d{11}$/.test(cpf) || /^([0-9])\1{10}$/.test(cpf)) return false;
+  const calculateDigit = (digits, weightStart) => {
+    const sum = Array.from(digits).reduce((total, digit, index2) => total + Number(digit) * (weightStart - index2), 0);
+    const remainder = sum * 10 % 11;
+    return remainder === 10 ? 0 : remainder;
+  };
+  const firstDigit = calculateDigit(cpf.slice(0, 9), 10);
+  if (firstDigit !== Number(cpf[9])) return false;
+  const secondDigit = calculateDigit(cpf.slice(0, 10), 11);
+  return secondDigit === Number(cpf[10]);
+}
+
 // server/_core/cookies.ts
 function isSecureRequest(req) {
   if (req.protocol === "https") return true;
@@ -480,6 +498,21 @@ var auditLogs = pgTable(
   (table) => [index("audit_logs_created_idx").on(table.createdAt)]
 );
 
+// server/report-financial-utils.ts
+function calculateReportFinancialTotals(sales, items, expensesCents) {
+  const salesCents = sales.reduce((total, sale) => total + sale.salesCents, 0);
+  const tipCents = sales.reduce((total, sale) => total + sale.tipCents, 0);
+  const productSalesCents = items.reduce((total, item) => total + item.quantity * item.unitPriceCents, 0);
+  const costCents = items.reduce((total, item) => total + item.quantity * item.unitCostCents, 0);
+  return {
+    salesCents,
+    tipCents,
+    productSalesCents,
+    costCents,
+    resultCents: salesCents - tipCents - costCents - expensesCents
+  };
+}
+
 // server/price-rule-utils.ts
 function parseRuleTime(value) {
   const match = /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(value);
@@ -894,9 +927,6 @@ async function setTabCustomerName(tabId, customerName, userId) {
     return { tabId, customerName: normalizedName };
   });
 }
-function normalizeCpf(cpf) {
-  return cpf.replace(/\D/g, "");
-}
 async function listCustomers() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
@@ -907,7 +937,7 @@ async function saveCustomer(input, userId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   const cpf = normalizeCpf(input.cpf);
-  if (cpf.length !== 11) throw new Error("Informe um CPF v\xE1lido com 11 d\xEDgitos");
+  if (!isValidCpf(cpf)) throw new Error("CPF inv\xE1lido. Confira os 11 d\xEDgitos e tente novamente.");
   const name = input.name.trim();
   if (name.length < 2) throw new Error("Informe o nome do cliente");
   const data = { name, cpf, phone: input.phone?.trim() || null, notes: input.notes?.trim() || null, active: true, updatedAt: /* @__PURE__ */ new Date() };
@@ -1422,7 +1452,7 @@ async function getReportSummary(from, to) {
     const items = itemsByTab.get(tab.id) ?? [];
     const paymentsForTab = paymentsByTab.get(tab.id) ?? [];
     const subtotalCents = items.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
-    const salesCents2 = Math.max(0, subtotalCents + tab.tipCents - tab.discountCents);
+    const salesCents = Math.max(0, subtotalCents + tab.tipCents - tab.discountCents);
     const receivedCents2 = paymentsForTab.reduce((sum, payment) => sum + payment.amountCents, 0);
     return {
       id: tab.id,
@@ -1433,26 +1463,23 @@ async function getReportSummary(from, to) {
       subtotalCents,
       tipCents: tab.tipCents,
       discountCents: tab.discountCents,
-      salesCents: salesCents2,
+      salesCents,
       receivedCents: receivedCents2,
-      balanceCents: Math.max(0, salesCents2 - receivedCents2),
+      balanceCents: Math.max(0, salesCents - receivedCents2),
       items: items.map(({ id, productName, quantity, unitPriceCents, unitCostCents }) => ({ id, productName, quantity, unitPriceCents, totalCents: quantity * unitPriceCents, costCents: quantity * unitCostCents })),
       payments: paymentsForTab.map(({ amountCents, method, createdAt }) => ({ amountCents, method, createdAt }))
     };
   });
-  const salesCents = sales.reduce((sum, tab) => sum + tab.salesCents, 0);
   const receivedCents = periodPaymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
-  const costCents = productRows.reduce((sum, item) => sum + item.quantity * item.unitCostCents, 0);
   const expensesCents = expenseRows.reduce((sum, expense) => sum + expense.amountCents, 0);
+  const financialTotals = calculateReportFinancialTotals(sales, productRows, expensesCents);
   return {
-    salesCents,
+    ...financialTotals,
     receivedCents,
     outstandingCents: sales.reduce((sum, tab) => sum + tab.balanceCents, 0),
     salesCount: sales.length,
     productUnits: productRows.reduce((sum, item) => sum + item.quantity, 0),
-    costCents,
     expensesCents,
-    resultCents: salesCents - expensesCents - costCents,
     paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents),
     products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity),
     sales,
@@ -1937,7 +1964,7 @@ var appRouter = router({
       await operator(ctx);
       return listCustomers();
     }),
-    save: protectedProcedure.input(z2.object({ id: z2.number().int().positive().optional(), name: z2.string().trim().min(2).max(160), cpf: z2.string().min(11).max(18), phone: z2.string().max(30).optional(), notes: z2.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
+    save: protectedProcedure.input(z2.object({ id: z2.number().int().positive().optional(), name: z2.string().trim().min(2).max(160), cpf: z2.string().min(11).max(18).refine(isValidCpf, "CPF inv\xE1lido. Confira os 11 d\xEDgitos e tente novamente."), phone: z2.string().max(30).optional(), notes: z2.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
       await operator(ctx);
       return saveCustomer(input, ctx.user.id);
     }),
