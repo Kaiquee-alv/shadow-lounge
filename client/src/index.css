@@ -588,3 +588,10 @@ h3 { font-size: 17px; font-weight: 700; }
 .sidebar nav { flex: 0 0 auto; }
 .quick-product-row { display: flex; align-items: stretch; border-top: 1px solid #292a33; }
 .quick-products .quick-product-row > .quick-product-add { min-width: 0; flex: 1; border-top: 0; }
+
+/* Confirma visualmente a direção selecionada no ajuste de estoque, inclusive no tema claro. */
+.direction-toggle button.selected { font-weight: 800; transform: translateY(-1px); }
+.direction-toggle button:first-child.selected { color: #11643a !important; background: #e8f7ed !important; border: 2px solid #168447 !important; box-shadow: 0 0 0 3px rgba(22,132,71,.17) !important; }
+.direction-toggle button:last-child.selected { color: #a52822 !important; background: #fff0ef !important; border: 2px solid #cf3c35 !important; box-shadow: 0 0 0 3px rgba(207,60,53,.16) !important; }
+.direction-toggle button.selected::after { content: "✓"; margin-left: 2px; font-size: 15px; font-weight: 900; }
+.direction-toggle button:focus-visible { outline: 3px solid rgba(28,102,180,.45); outline-offset: 2px; }

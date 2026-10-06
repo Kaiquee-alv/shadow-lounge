@@ -646,6 +646,7 @@ export async function syncOfflineTab(input: {
       await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${item.quantity}` }).where(eq(products.id, product[0].id));
       await tx.insert(tabItems).values({ tabId, productId: product[0].id, productName: product[0].name, quantity: item.quantity, baseUnitPriceCents: product[0].priceCents, unitPriceCents: product[0].priceCents, unitCostCents: product[0].costCents, note: item.note ?? null, addedBy: userId, ...(item.createdAt ? { createdAt: new Date(item.createdAt) } : {}) });
       await tx.insert(stockMovements).values({ productId: product[0].id, quantity: item.quantity, direction: "out", reason: "Venda em comanda offline", referenceType: "tab", referenceId: tabId, createdBy: userId });
+      await tx.insert(auditLogs).values({ userId, action: "ADD_ITEM", entityType: "tab", entityId: tabId, description: `Adicionou ${item.quantity}x ${product[0].name} à comanda ${tabCode} (sincronização offline)` });
       subtotalCents += item.quantity * product[0].priceCents;
     }
     const tipCents = Math.round(subtotalCents * input.tipPercent / 100);
@@ -759,7 +760,7 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
       subtotalCents: sql<number>`COALESCE((SELECT SUM("quantity"::bigint * "unitPriceCents"::bigint) FROM "tab_items" WHERE "tabId" = ${input.tabId}), 0)`,
     });
     const currentTotals = tabTotalsForSubtotal(Number(updatedTab[0]?.subtotalCents ?? 0), tab[0]);
-    const description = `Adicionou ${input.quantity}x ${product[0].name}`;
+    const description = `Adicionou ${input.quantity}x ${product[0].name} à comanda ${tab[0].tabCode}`;
     const audit = await tx.insert(auditLogs).values({ userId, action: "ADD_ITEM", entityType: "tab", entityId: input.tabId, description }).returning({ id: auditLogs.id, createdAt: auditLogs.createdAt });
     return {
       item: { ...insertedItem[0], addedByName },
@@ -810,7 +811,10 @@ export async function setTabItemQuantity(input: { itemId: number; quantity: numb
     const paidCents = paymentsRows.reduce((sum, payment) => sum + payment.amountCents, 0);
     if (currentTotals.totalCents < paidCents) throw new Error("Não é possível reduzir a comanda abaixo do valor já pago");
     await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, item[0].tabId));
-    await tx.insert(auditLogs).values({ userId, action: input.quantity === 0 ? "REMOVE_ITEM" : "UPDATE_ITEM", entityType: "tab", entityId: item[0].tabId, description: `Atualizou ${item[0].productName}` });
+    const description = input.quantity === 0
+      ? `Removeu ${item[0].quantity}x ${item[0].productName} da comanda ${tab[0].tabCode}`
+      : `Alterou a quantidade de ${item[0].productName} de ${item[0].quantity} para ${input.quantity} na comanda ${tab[0].tabCode}`;
+    await tx.insert(auditLogs).values({ userId, action: input.quantity === 0 ? "REMOVE_ITEM" : "UPDATE_ITEM", entityType: "tab", entityId: item[0].tabId, description });
   });
 }
 
@@ -995,7 +999,15 @@ export async function adjustStock(input: { productId: number; quantity: number; 
     if (change < 0 && systemSettings[0]?.preventNegativeStock && product[0].stockQuantity + change < 0) throw new Error("Ajuste resultaria em estoque negativo");
     await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} + ${change}` }).where(eq(products.id, input.productId));
     await tx.insert(stockMovements).values({ productId: input.productId, quantity: input.quantity, direction: input.direction, reason: input.reason, createdBy: userId });
-    await tx.insert(auditLogs).values({ userId, action: "ADJUST_STOCK", entityType: "product", entityId: input.productId, description: `${input.direction === "in" ? "Entrada" : "Saída"}: ${input.reason}` });
+    const stockAction = input.direction === "in" ? "Entrada" : "Saída";
+    const nextStock = product[0].stockQuantity + change;
+    await tx.insert(auditLogs).values({
+      userId,
+      action: "ADJUST_STOCK",
+      entityType: "product",
+      entityId: input.productId,
+      description: `${stockAction} de ${input.quantity} ${product[0].unit} de ${product[0].name} no estoque (${product[0].stockQuantity} → ${nextStock} ${product[0].unit}). Motivo: ${input.reason}`,
+    });
   });
 }
 
