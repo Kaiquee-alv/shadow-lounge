@@ -184,6 +184,7 @@ export const tabs = pgTable(
     uniqueIndex("tabs_code_unique").on(table.tabCode),
     uniqueIndex("tabs_offline_key_unique").on(table.offlineKey),
     index("tabs_table_status_idx").on(table.tableId, table.status),
+    index("tabs_status_idx").on(table.status),
   ],
 );
 

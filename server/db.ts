@@ -26,6 +26,8 @@ import { isValidCpf, normalizeCpf } from "@shared/cpf";
 import { calculateReportFinancialTotals } from "./report-financial-utils.js";
 import { priceRuleAppliesAt, saoPauloClock, timeInWindow, weekdaysFromMask, weekdaysToMask } from "./price-rule-utils.js";
 import { planTabTotalAdjustment } from "./tab-adjustment-utils.js";
+import { buildDailyRevenue } from "./daily-revenue-utils.js";
+import { addDaysToSaoPauloDateKey, saoPauloDateKey, saoPauloDayStart } from "../shared/sao-paulo-time.js";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _pool: Pool | null = null;
@@ -82,7 +84,21 @@ const categoriesSeed = [
   "Narguilé", "Essências", "Carvões", "Petiscos", "Outros",
 ];
 
+let initialDataPromise: Promise<void> | null = null;
+
 export async function ensureInitialData() {
+  if (!initialDataPromise) {
+    initialDataPromise = initializeInitialData();
+  }
+  try {
+    await initialDataPromise;
+  } catch (error) {
+    initialDataPromise = null;
+    throw error;
+  }
+}
+
+async function initializeInitialData() {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
 
@@ -103,6 +119,7 @@ export async function ensureInitialData() {
   // Permite linhas separadas para o mesmo produto quando uma delas usa uma promoção.
   await db.execute(sql`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "tabs_status_idx" ON "tabs" ("status")`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index) => ({ number: index + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({ target: productCategories.name,
     set: { active: true },
@@ -308,14 +325,17 @@ function centsOf(items: Array<{ quantity: number; unitPriceCents: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
 }
 
-function tabTotals(items: Array<{ quantity: number; unitPriceCents: number }>, tab: { tipPercent?: number; tipCents?: number; manualAdjustmentCents?: number }) {
-  const subtotalCents = centsOf(items);
+function tabTotalsForSubtotal(subtotalCents: number, tab: { tipPercent?: number; manualAdjustmentCents?: number }) {
   const discountCents = 0;
-  // tipCents é um valor derivado: sempre recalcular com base nos itens atuais.
-  // Isso evita manter gorjeta residual após a remoção do último item da comanda.
   const tipCents = Math.round(subtotalCents * (tab.tipPercent ?? 0) / 100);
   const manualAdjustmentCents = tab.manualAdjustmentCents ?? 0;
   return { subtotalCents, discountCents, tipCents, manualAdjustmentCents, totalCents: Math.max(0, subtotalCents + tipCents + manualAdjustmentCents) };
+}
+
+function tabTotals(items: Array<{ quantity: number; unitPriceCents: number }>, tab: { tipPercent?: number; tipCents?: number; manualAdjustmentCents?: number }) {
+  const subtotalCents = centsOf(items);
+  // tipCents é derivado: sempre recalcular para evitar residual após remover itens.
+  return tabTotalsForSubtotal(subtotalCents, tab);
 }
 
 function parseTime(value: string) {
@@ -329,23 +349,41 @@ export async function listTables() {
   await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
-  const configuredSettings = await db.select({ maxTables: settings.maxTables }).from(settings).limit(1);
+  const [configuredSettings, allTableRows] = await Promise.all([
+    db.select({ maxTables: settings.maxTables }).from(settings).limit(1),
+    db.select({ id: loungeTables.id, number: loungeTables.number }).from(loungeTables).orderBy(asc(loungeTables.number)),
+  ]);
   const maxTables = configuredSettings[0]?.maxTables ?? 20;
-  const tableRows = (await db.select().from(loungeTables).orderBy(asc(loungeTables.number))).filter((table) => table.number <= maxTables);
-  const openTabs = await db.select().from(tabs).where(eq(tabs.status, "open"));
+  const tableRows = allTableRows.filter((table) => table.number <= maxTables);
+  const openTabs = await db.select({
+    id: tabs.id,
+    tableId: tabs.tableId,
+    tabCode: tabs.tabCode,
+    customerName: tabs.customerName,
+    openedAt: tabs.openedAt,
+    version: tabs.version,
+    tipPercent: tabs.tipPercent,
+    tipCents: tabs.tipCents,
+    manualAdjustmentCents: tabs.manualAdjustmentCents,
+  }).from(tabs).where(eq(tabs.status, "open"));
   const tabIds = openTabs.map((tab) => tab.id);
-  const [allItems, allPayments] = tabIds.length
+  const [subtotalRows, paymentRows] = tabIds.length
     ? await Promise.all([
-        db.select().from(tabItems).where(inArray(tabItems.tabId, tabIds)),
-        db.select().from(payments).where(inArray(payments.tabId, tabIds)),
+        db.select({ tabId: tabItems.tabId, subtotalCents: sql<number>`COALESCE(SUM(${tabItems.quantity}::bigint * ${tabItems.unitPriceCents}::bigint), 0)` })
+          .from(tabItems).where(inArray(tabItems.tabId, tabIds)).groupBy(tabItems.tabId),
+        db.select({ tabId: payments.tabId, paidCents: sql<number>`COALESCE(SUM(${payments.amountCents}::bigint), 0)` })
+          .from(payments).where(inArray(payments.tabId, tabIds)).groupBy(payments.tabId),
       ])
     : [[], []];
   const tabsByTable = new Map(openTabs.map((tab) => [tab.tableId, tab]));
+  const subtotalByTab = new Map(subtotalRows.map((row) => [row.tabId, Number(row.subtotalCents ?? 0)]));
+  const paidByTab = new Map<number, number>();
+  for (const payment of paymentRows) paidByTab.set(payment.tabId, Number(payment.paidCents ?? 0));
   return tableRows.map((table) => {
     const tab = tabsByTable.get(table.id);
-    const items = tab ? allItems.filter((item) => item.tabId === tab.id) : [];
-    const paid = tab ? allPayments.filter((payment) => payment.tabId === tab.id).reduce((sum, payment) => sum + payment.amountCents, 0) : 0;
-    const total = tab ? tabTotals(items, tab).totalCents : 0;
+    const subtotal = tab ? subtotalByTab.get(tab.id) ?? 0 : 0;
+    const paid = tab ? paidByTab.get(tab.id) ?? 0 : 0;
+    const total = tab ? tabTotalsForSubtotal(subtotal, tab).totalCents : 0;
     const balance = Math.max(total - paid, 0);
     const computedStatus = !tab ? "free" : paid > 0 && balance > 0 ? "partial" : "occupied";
     return {
@@ -354,6 +392,7 @@ export async function listTables() {
       status: computedStatus,
       tabId: tab?.id ?? null,
       tabCode: tab?.tabCode ?? null,
+      version: tab?.version ?? null,
       customerName: tab?.customerName ?? null,
       openedAt: tab?.openedAt ?? null,
       totalCents: total,
@@ -373,6 +412,7 @@ export async function getTabDetails(tabId: number) {
     customerId: tabs.customerId,
     customerCpf: customers.cpf,
     status: tabs.status,
+    version: tabs.version,
     openedAt: tabs.openedAt,
     closedAt: tabs.closedAt,
     discountPercent: tabs.discountPercent,
@@ -488,24 +528,47 @@ export async function assignTabCustomer(tabId: number, customerId: number | null
   });
 }
 
-export async function openTab(tableId: number, userId: number) {
+export async function openTab(tableId: number, userId: number, openedByName: string) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${tableId} FOR UPDATE`);
-    const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, tableId)).limit(1);
+    const table = await tx.select({ id: loungeTables.id, number: loungeTables.number }).from(loungeTables).where(eq(loungeTables.id, tableId)).for("update").limit(1);
     if (!table[0]) throw new Error("Mesa não encontrada");
     const existingOpenTab = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, tableId), eq(tabs.status, "open"))).limit(1);
     if (existingOpenTab[0]) throw new Error("Esta mesa já possui uma comanda aberta");
-    // Corrige status/activeTabId antigos ou órfãos antes de abrir uma nova comanda.
-    await tx.update(loungeTables).set({ status: "occupied", activeTabId: null, updatedAt: new Date() }).where(eq(loungeTables.id, tableId));
-    const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId }).returning({ id: tabs.id });
+    const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId }).returning({ id: tabs.id, openedAt: tabs.openedAt });
     const tabId = Number(inserted[0].id);
     const tabCode = `#${String(tabId).padStart(6, "0")}`;
     await tx.update(tabs).set({ tabCode }).where(eq(tabs.id, tabId));
     await tx.update(loungeTables).set({ activeTabId: tabId, status: "occupied" }).where(eq(loungeTables.id, tableId));
     await tx.insert(auditLogs).values({ userId, action: "OPEN_TAB", entityType: "tab", entityId: tabId, description: `Abriu a comanda ${tabCode}` });
-    return { id: tabId, tabCode };
+    return {
+      id: tabId,
+      tabCode,
+      tableId,
+      tableNumber: table[0].number,
+      status: "open" as const,
+      version: 1,
+      customerName: null,
+      customerId: null,
+      customerCpf: null,
+      openedAt: inserted[0].openedAt,
+      closedAt: null,
+      openedByName,
+      discountPercent: 0,
+      discountCents: 0,
+      tipPercent: 0,
+      tipCents: 0,
+      manualAdjustmentCents: 0,
+      adjustmentReason: null,
+      items: [],
+      payments: [],
+      launchHistory: [],
+      subtotalCents: 0,
+      totalCents: 0,
+      paidCents: 0,
+      balanceCents: 0,
+    };
   });
 }
 
@@ -515,7 +578,7 @@ export async function syncOfflineTab(input: {
   tableId: number;
   customerName?: string | null;
   tipPercent: 0 | 10;
-  items: Array<{ productId: number; productName: string; quantity: number; note?: string | null }>;
+  items: Array<{ productId: number; productName: string; quantity: number; note?: string | null; createdAt?: string }>;
   payments: Array<{ amountCents: number; method: "pix" | "cash" | "debit" | "credit" | "other"; requestKey: string }>;
 }, userId: number) {
   const db = await getDb();
@@ -541,7 +604,7 @@ export async function syncOfflineTab(input: {
       const systemSettings = await tx.select().from(settings).limit(1);
       if (systemSettings[0]?.preventNegativeStock && product[0].stockQuantity < item.quantity) throw new Error(`Estoque insuficiente para ${product[0].name}`);
       await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${item.quantity}` }).where(eq(products.id, product[0].id));
-      await tx.insert(tabItems).values({ tabId, productId: product[0].id, productName: product[0].name, quantity: item.quantity, baseUnitPriceCents: product[0].priceCents, unitPriceCents: product[0].priceCents, unitCostCents: product[0].costCents, note: item.note ?? null, addedBy: userId });
+      await tx.insert(tabItems).values({ tabId, productId: product[0].id, productName: product[0].name, quantity: item.quantity, baseUnitPriceCents: product[0].priceCents, unitPriceCents: product[0].priceCents, unitCostCents: product[0].costCents, note: item.note ?? null, addedBy: userId, ...(item.createdAt ? { createdAt: new Date(item.createdAt) } : {}) });
       await tx.insert(stockMovements).values({ productId: product[0].id, quantity: item.quantity, direction: "out", reason: "Venda em comanda offline", referenceType: "tab", referenceId: tabId, createdBy: userId });
       subtotalCents += item.quantity * product[0].priceCents;
     }
@@ -590,15 +653,13 @@ export async function transferTab(tabId: number, destinationTableId: number, use
   });
 }
 
-export async function addTabItem(input: { tabId: number; productId: number; quantity: number; note?: string }, userId: number, localRole: "administrator" | "manager" | "attendant") {
+export async function addTabItem(input: { tabId: number; productId: number; quantity: number; note?: string }, userId: number, addedByName: string) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
-    const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
+    const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).for("update").limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
-    await tx.execute(sql`SELECT id FROM products WHERE id = ${input.productId} FOR UPDATE`);
-    const product = await tx.select().from(products).where(eq(products.id, input.productId)).limit(1);
+    const product = await tx.select().from(products).where(eq(products.id, input.productId)).for("update").limit(1);
     if (!product[0] || !product[0].active) throw new Error("Produto indisponível");
     const systemSettings = await tx.select().from(settings).limit(1);
     if (systemSettings[0]?.preventNegativeStock && product[0].stockQuantity < input.quantity) throw new Error("Estoque insuficiente para este lançamento");
@@ -624,38 +685,49 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
       ? `Happy Hour${scheduledRule ? ` + ${scheduledRule.name}` : ""}`
       : scheduledRule?.name ?? null;
     await tx.update(products).set({ stockQuantity: sql`${products.stockQuantity} - ${input.quantity}` }).where(eq(products.id, input.productId));
-    const matchingItems = await tx.select().from(tabItems).where(and(eq(tabItems.tabId, input.tabId), eq(tabItems.productId, input.productId)));
-    const existing = matchingItems.find((item) => item.unitPriceCents === unitPriceCents && item.discountReason === discountReason);
-    if (existing) {
-      await tx.update(tabItems).set({
-        quantity: sql`${tabItems.quantity} + ${input.quantity}`,
-        unitPriceCents,
-        discountPercent,
-        discountReason,
-        note: input.note ?? existing.note,
-        addedBy: userId,
-        updatedAt: new Date(),
-      }).where(eq(tabItems.id, existing.id));
-    } else {
-      await tx.insert(tabItems).values({
-        tabId: input.tabId,
-        productId: product[0].id,
-        productName: product[0].name,
-        quantity: input.quantity,
-        baseUnitPriceCents: product[0].priceCents,
-        unitPriceCents,
-        unitCostCents: product[0].costCents,
-        discountPercent,
-        discountReason,
-        note: input.note,
-        addedBy: userId,
-      });
-    }
+    const insertedItem = await tx.insert(tabItems).values({
+      tabId: input.tabId,
+      productId: product[0].id,
+      productName: product[0].name,
+      quantity: input.quantity,
+      baseUnitPriceCents: product[0].priceCents,
+      unitPriceCents,
+      unitCostCents: product[0].costCents,
+      discountPercent,
+      discountReason,
+      note: input.note,
+      addedBy: userId,
+    }).returning({
+      id: tabItems.id,
+      productId: tabItems.productId,
+      productName: tabItems.productName,
+      quantity: tabItems.quantity,
+      baseUnitPriceCents: tabItems.baseUnitPriceCents,
+      unitPriceCents: tabItems.unitPriceCents,
+      unitCostCents: tabItems.unitCostCents,
+      discountPercent: tabItems.discountPercent,
+      discountReason: tabItems.discountReason,
+      note: tabItems.note,
+      createdAt: tabItems.createdAt,
+    });
     await tx.insert(stockMovements).values({ productId: input.productId, quantity: input.quantity, direction: "out", reason: "Venda em comanda", referenceType: "tab", referenceId: input.tabId, createdBy: userId });
-    const currentItems = await tx.select({ quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents }).from(tabItems).where(eq(tabItems.tabId, input.tabId));
-    const currentTotals = tabTotals(currentItems, tab[0]);
-    await tx.update(tabs).set({ tipCents: currentTotals.tipCents, version: sql`${tabs.version} + 1` }).where(eq(tabs.id, input.tabId));
-    await tx.insert(auditLogs).values({ userId, action: "ADD_ITEM", entityType: "tab", entityId: input.tabId, description: `Adicionou ${input.quantity}x ${product[0].name}` });
+    const updatedTab = await tx.update(tabs).set({
+      tipCents: sql`ROUND(COALESCE((SELECT SUM("quantity"::bigint * "unitPriceCents"::bigint) FROM "tab_items" WHERE "tabId" = ${input.tabId}), 0) * ${tab[0].tipPercent} / 100)::integer`,
+      version: sql`${tabs.version} + 1`,
+    }).where(eq(tabs.id, input.tabId)).returning({
+      version: tabs.version,
+      subtotalCents: sql<number>`COALESCE((SELECT SUM("quantity"::bigint * "unitPriceCents"::bigint) FROM "tab_items" WHERE "tabId" = ${input.tabId}), 0)`,
+    });
+    const currentTotals = tabTotalsForSubtotal(Number(updatedTab[0]?.subtotalCents ?? 0), tab[0]);
+    const description = `Adicionou ${input.quantity}x ${product[0].name}`;
+    const audit = await tx.insert(auditLogs).values({ userId, action: "ADD_ITEM", entityType: "tab", entityId: input.tabId, description }).returning({ id: auditLogs.id, createdAt: auditLogs.createdAt });
+    return {
+      item: { ...insertedItem[0], addedByName },
+      product: { id: product[0].id, stockQuantity: product[0].stockQuantity - input.quantity },
+      ...currentTotals,
+      version: updatedTab[0]?.version ?? tab[0].version + 1,
+      audit: { id: audit[0].id, action: "ADD_ITEM", description, createdAt: audit[0].createdAt, userName: addedByName },
+    };
   });
 }
 
@@ -929,9 +1001,9 @@ export async function getDashboard(rangeDays = 30) {
   await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
-  const start = new Date();
-  start.setDate(start.getDate() - Math.max(rangeDays - 1, 0));
-  start.setHours(0, 0, 0, 0);
+  const now = new Date();
+  const normalizedRange = Number.isInteger(rangeDays) && rangeDays > 0 ? Math.min(365, rangeDays) : 30;
+  const start = saoPauloDayStart(addDaysToSaoPauloDateKey(saoPauloDateKey(now), -normalizedRange + 1));
   const [paymentRows, expenseRows, itemRows, openTabs, inventory] = await Promise.all([
     db.select({ amountCents: payments.amountCents, method: payments.method, createdAt: payments.createdAt, tabId: payments.tabId }).from(payments).where(gte(payments.createdAt, start)),
     db.select().from(expenses).where(gte(expenses.occurredAt, start)),
@@ -965,8 +1037,13 @@ export async function getDashboard(rangeDays = 30) {
     pendingCents,
     averageTicketCents: paymentRows.length ? Math.round(paidCents / new Set(paymentRows.map((payment) => payment.tabId)).size) : 0,
     lowStock: inventory.filter((product) => product.stockQuantity <= product.minimumStock).length,
+    lowStockProducts: inventory.filter((product) => product.stockQuantity <= product.minimumStock)
+      .sort((a, b) => (a.stockQuantity - a.minimumStock) - (b.stockQuantity - b.minimumStock))
+      .slice(0, 3)
+      .map(({ name, stockQuantity, minimumStock }) => ({ name, stockQuantity, minimumStock })),
     paymentMethods,
     topProducts: Array.from(productMap.values()).sort((a, b) => b.totalCents - a.totalCents).slice(0, 5),
+    dailyRevenue: buildDailyRevenue(normalizedRange, paymentRows, now),
   };
 }
 
