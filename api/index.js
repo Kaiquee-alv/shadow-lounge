@@ -501,6 +501,16 @@ var auditLogs = pgTable(
   (table) => [index("audit_logs_created_idx").on(table.createdAt)]
 );
 
+// shared/audit-labels.ts
+var roleLabels = {
+  administrator: "administrador",
+  manager: "gerente",
+  attendant: "atendente"
+};
+function auditRoleLabel(role) {
+  return roleLabels[role] ?? "perfil n\xE3o identificado";
+}
+
 // server/report-financial-utils.ts
 function calculateReportFinancialTotals(sales, items, expensesCents) {
   const salesCents = sales.reduce((total, sale) => total + sale.salesCents, 0);
@@ -710,6 +720,45 @@ async function initializeInitialData() {
   await db.execute(sql2`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
   await db.execute(sql2`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
   await db.execute(sql2`CREATE INDEX IF NOT EXISTS "tabs_status_idx" ON "tabs" ("status")`);
+  await db.execute(sql2`CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $audit_immutable$
+    BEGIN
+      RAISE EXCEPTION 'Registros de auditoria são imutáveis; alterações e exclusões não são permitidas'
+        USING ERRCODE = '55000';
+    END;
+    $audit_immutable$`);
+  await db.execute(sql2`DO $audit_trigger$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'audit_logs_no_update_delete'
+          AND tgrelid = 'public.audit_logs'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        BEGIN
+          CREATE TRIGGER audit_logs_no_update_delete
+          BEFORE UPDATE OR DELETE ON public.audit_logs
+          FOR EACH ROW EXECUTE FUNCTION public.reject_audit_log_mutation();
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'audit_logs_no_truncate'
+          AND tgrelid = 'public.audit_logs'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        BEGIN
+          CREATE TRIGGER audit_logs_no_truncate
+          BEFORE TRUNCATE ON public.audit_logs
+          FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation();
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END;
+      END IF;
+    END;
+    $audit_trigger$`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index2) => ({ number: index2 + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({
     target: productCategories.name,
@@ -880,7 +929,7 @@ async function createLocalUser(input, actorId) {
     await tx.insert(localCredentials).values({ userId, username, passwordHash: hashPassword(input.password) });
     return userId;
   });
-  await writeAudit(actorId, "CREATE_USER", "user", result, `Criou o usu\xE1rio ${input.name.trim()} (${input.localRole})`);
+  await writeAudit(actorId, "CREATE_USER", "user", result, `Criou o usu\xE1rio ${input.name.trim()} (${auditRoleLabel(input.localRole)})`);
   return { id: result, success: true };
 }
 function centsOf(items) {
@@ -1554,6 +1603,7 @@ async function getDashboard(rangeDays = 30) {
   };
 }
 async function listAudit() {
+  await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   return db.select({
@@ -1563,7 +1613,7 @@ async function listAudit() {
     description: auditLogs.description,
     createdAt: auditLogs.createdAt,
     userName: users.name
-  }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).orderBy(desc(auditLogs.createdAt)).limit(100);
+  }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).orderBy(desc(auditLogs.createdAt), desc(auditLogs.id)).limit(100);
 }
 async function listProductHistory(productId, from, to) {
   const db = await getDb();
@@ -1675,7 +1725,7 @@ async function updateUserAccess(input, actorId) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
   await db.insert(userProfiles).values({ userId: input.userId, localRole: input.localRole, active: input.active }).onConflictDoUpdate({ target: userProfiles.userId, set: { localRole: input.localRole, active: input.active } });
-  await writeAudit(actorId, "UPDATE_ACCESS", "user", input.userId, `Atualizou permiss\xE3o para ${input.localRole} (${input.active ? "ativo" : "inativo"})`);
+  await writeAudit(actorId, "UPDATE_ACCESS", "user", input.userId, `Atualizou permiss\xE3o para ${auditRoleLabel(input.localRole)} (${input.active ? "ativo" : "inativo"})`);
   return { success: true };
 }
 async function deleteLocalUser(userId, actorId) {

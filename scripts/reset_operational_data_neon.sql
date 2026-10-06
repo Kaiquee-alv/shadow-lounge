@@ -1,7 +1,7 @@
 -- Shadow Lounge: reset operacional para início da operação
 -- Mantém: Cerveja Heineken, Coca-Cola e Água 500ml
 -- Mantém usuários, perfis, configurações, categorias e demais dados cadastrais.
--- Atenção: execute no banco correto. A operação remove históricos operacionais.
+-- Atenção: execute no banco correto. A operação remove dados operacionais, mas preserva audit_logs.
 
 -- Se uma execução anterior falhou, libera a transação abortada.
 ROLLBACK;
@@ -31,7 +31,6 @@ DELETE FROM tab_items;
 DELETE FROM tabs;
 DELETE FROM stock_movements;
 DELETE FROM expenses;
-DELETE FROM audit_logs;
 
 -- Remove regras de preço de produtos que não serão mantidos.
 DELETE FROM product_price_rules

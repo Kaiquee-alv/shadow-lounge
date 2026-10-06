@@ -21,7 +21,6 @@ await db.transaction(async (tx) => {
   await tx.execute(sql`DELETE FROM tabs`);
   await tx.execute(sql`DELETE FROM stock_movements`);
   await tx.execute(sql`DELETE FROM expenses`);
-  await tx.execute(sql`DELETE FROM audit_logs`);
   await tx.execute(sql`DELETE FROM product_price_rules WHERE "productId" NOT IN (${keepList})`);
   await tx.execute(sql`DELETE FROM products WHERE id NOT IN (${keepList})`);
   await tx.execute(sql`UPDATE lounge_tables SET status = 'free', "activeTabId" = NULL, "updatedAt" = NOW()`);
@@ -36,4 +35,5 @@ const counts = await Promise.all([
   db.execute(sql`SELECT COUNT(*)::int AS count FROM audit_logs`),
   db.select({ id: products.id, name: products.name, stockQuantity: products.stockQuantity }).from(products),
 ]);
-console.log(JSON.stringify({ preservedProducts: counts[5], emptyOperationalTables: counts.slice(0, 5).map((result: any) => result.rows?.[0]?.count ?? 0) }));
+const auditLogCount = Number((counts[4] as any).rows?.[0]?.count ?? 0);
+console.log(JSON.stringify({ preservedProducts: counts[5], emptyOperationalTables: counts.slice(0, 4).map((result: any) => result.rows?.[0]?.count ?? 0), auditLogsPreserved: auditLogCount }));

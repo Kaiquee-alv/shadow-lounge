@@ -14,6 +14,16 @@ if (typeof window !== "undefined" && "serviceWorker" in navigator) {
   window.addEventListener("load", () => { void navigator.serviceWorker.register("/service-worker.js"); });
 }
 
+const analyticsEndpoint = import.meta.env.VITE_ANALYTICS_ENDPOINT;
+const analyticsWebsiteId = import.meta.env.VITE_ANALYTICS_WEBSITE_ID;
+if (analyticsEndpoint && analyticsWebsiteId && typeof document !== "undefined") {
+  const analyticsScript = document.createElement("script");
+  analyticsScript.defer = true;
+  analyticsScript.src = `${analyticsEndpoint.replace(/\/$/, "")}/umami`;
+  analyticsScript.dataset.websiteId = analyticsWebsiteId;
+  document.head.appendChild(analyticsScript);
+}
+
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;

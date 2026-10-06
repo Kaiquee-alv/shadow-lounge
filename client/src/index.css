@@ -588,5 +588,3 @@ h3 { font-size: 17px; font-weight: 700; }
 .sidebar nav { flex: 0 0 auto; }
 .quick-product-row { display: flex; align-items: stretch; border-top: 1px solid #292a33; }
 .quick-products .quick-product-row > .quick-product-add { min-width: 0; flex: 1; border-top: 0; }
-.quick-products .quick-product-row > .quick-product-options { width: 38px; flex: 0 0 38px; justify-content: center; padding: 8px; color: #aaa5a0; border: 0; background: transparent; }
-.quick-products .quick-product-row > .quick-product-options:hover { color: #f2c260; }

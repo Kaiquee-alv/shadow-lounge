@@ -8,6 +8,13 @@
       "when": 1789152324973,
       "tag": "0000_sharp_mentor",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791292065529,
+      "tag": "0007_immutable_audit_logs",
+      "breakpoints": true
     }
   ]
 }

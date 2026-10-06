@@ -23,6 +23,7 @@ import {
 } from "../drizzle/schema.js";
 import { ENV } from "./_core/env.js";
 import { isValidCpf, normalizeCpf } from "@shared/cpf";
+import { auditRoleLabel } from "@shared/audit-labels";
 import { calculateReportFinancialTotals } from "./report-financial-utils.js";
 import { priceRuleAppliesAt, saoPauloClock, timeInWindow, weekdaysFromMask, weekdaysToMask } from "./price-rule-utils.js";
 import { planTabTotalAdjustment } from "./tab-adjustment-utils.js";
@@ -120,6 +121,45 @@ async function initializeInitialData() {
   await db.execute(sql`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "tabs_status_idx" ON "tabs" ("status")`);
+  await db.execute(sql`CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $audit_immutable$
+    BEGIN
+      RAISE EXCEPTION 'Registros de auditoria são imutáveis; alterações e exclusões não são permitidas'
+        USING ERRCODE = '55000';
+    END;
+    $audit_immutable$`);
+  await db.execute(sql`DO $audit_trigger$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'audit_logs_no_update_delete'
+          AND tgrelid = 'public.audit_logs'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        BEGIN
+          CREATE TRIGGER audit_logs_no_update_delete
+          BEFORE UPDATE OR DELETE ON public.audit_logs
+          FOR EACH ROW EXECUTE FUNCTION public.reject_audit_log_mutation();
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'audit_logs_no_truncate'
+          AND tgrelid = 'public.audit_logs'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        BEGIN
+          CREATE TRIGGER audit_logs_no_truncate
+          BEFORE TRUNCATE ON public.audit_logs
+          FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation();
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END;
+      END IF;
+    END;
+    $audit_trigger$`);
   await db.insert(loungeTables).values(Array.from({ length: 20 }, (_, index) => ({ number: index + 1 }))).onConflictDoNothing({ target: loungeTables.number });
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({ target: productCategories.name,
     set: { active: true },
@@ -317,7 +357,7 @@ export async function createLocalUser(input: { name: string; username: string; p
     await tx.insert(localCredentials).values({ userId, username, passwordHash: hashPassword(input.password) });
     return userId;
   });
-  await writeAudit(actorId, "CREATE_USER", "user", result, `Criou o usuário ${input.name.trim()} (${input.localRole})`);
+  await writeAudit(actorId, "CREATE_USER", "user", result, `Criou o usuário ${input.name.trim()} (${auditRoleLabel(input.localRole)})`);
   return { id: result, success: true };
 }
 
@@ -1048,6 +1088,7 @@ export async function getDashboard(rangeDays = 30) {
 }
 
 export async function listAudit() {
+  await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.select({
@@ -1057,7 +1098,7 @@ export async function listAudit() {
     description: auditLogs.description,
     createdAt: auditLogs.createdAt,
     userName: users.name,
-  }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).orderBy(desc(auditLogs.createdAt)).limit(100);
+  }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).orderBy(desc(auditLogs.createdAt), desc(auditLogs.id)).limit(100);
 }
 
 export async function listProductHistory(productId?: number, from?: Date, to?: Date) {
@@ -1167,7 +1208,7 @@ export async function updateUserAccess(input: { userId: number; localRole: "admi
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   await db.insert(userProfiles).values({ userId: input.userId, localRole: input.localRole, active: input.active }).onConflictDoUpdate({ target: userProfiles.userId, set: { localRole: input.localRole, active: input.active } });
-  await writeAudit(actorId, "UPDATE_ACCESS", "user", input.userId, `Atualizou permissão para ${input.localRole} (${input.active ? "ativo" : "inativo"})`);
+  await writeAudit(actorId, "UPDATE_ACCESS", "user", input.userId, `Atualizou permissão para ${auditRoleLabel(input.localRole)} (${input.active ? "ativo" : "inativo"})`);
   return { success: true };
 }
 
