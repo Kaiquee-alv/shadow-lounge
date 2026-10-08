@@ -1011,7 +1011,7 @@ export async function adjustStock(input: { productId: number; quantity: number; 
   });
 }
 
-export async function listStockMovements() {
+export async function listStockMovements(from?: Date, to?: Date) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.select({
@@ -1023,7 +1023,9 @@ export async function listStockMovements() {
     productName: products.name,
     unit: products.unit,
     userName: users.name,
-  }).from(stockMovements).innerJoin(products, eq(stockMovements.productId, products.id)).leftJoin(users, eq(stockMovements.createdBy, users.id)).orderBy(desc(stockMovements.createdAt), desc(stockMovements.id)).limit(100);
+  }).from(stockMovements).innerJoin(products, eq(stockMovements.productId, products.id)).leftJoin(users, eq(stockMovements.createdBy, users.id))
+    .where(and(from ? gte(stockMovements.createdAt, from) : undefined, to ? lte(stockMovements.createdAt, to) : undefined))
+    .orderBy(desc(stockMovements.createdAt), desc(stockMovements.id)).limit(100);
 }
 
 export async function createExpense(input: { description: string; category: string; amountCents: number; method: "pix" | "cash" | "debit" | "credit" | "other"; notes?: string; occurredAt: Date }, userId: number) {

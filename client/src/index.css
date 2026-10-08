@@ -624,3 +624,18 @@ h3 { font-size: 17px; font-weight: 700; }
   .stock-movement-head, .stock-movement-row { padding-left: 14px; padding-right: 14px; }
   .stock-movements-heading h3 { font-size: 15px; }
 }
+.stock-movements-heading { flex-wrap: wrap; }
+.stock-movement-controls { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: 9px; }
+.stock-movement-filter { min-width: 150px; display: grid; gap: 5px; color: #667085; font-size: 10px; font-weight: 800; }
+.stock-movement-filter select, .stock-movement-filter input { min-height: 36px; padding: 7px 9px; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 8px; font-size: 11px; }
+.stock-movement-date-range { display: flex; flex-wrap: wrap; gap: 8px; }
+.stock-movement-date-range .stock-movement-filter { min-width: 135px; }
+.movement-result-count { margin: 0; padding: 8px 20px; color: var(--ink-muted); background: #fbfcfd; border-bottom: 1px solid var(--line); font-size: 10px; }
+@media (max-width: 600px) {
+  .stock-movement-controls { width: 100%; justify-content: flex-start; }
+  .stock-movement-controls > .stock-movement-filter { flex: 1 1 100%; }
+  .stock-movement-date-range { width: 100%; }
+  .stock-movement-date-range .stock-movement-filter { min-width: 0; flex: 1; }
+  .movement-refresh { min-height: 36px; }
+  .movement-result-count { padding-left: 14px; padding-right: 14px; }
+}

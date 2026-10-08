@@ -218,9 +218,9 @@ export const appRouter = router({
       await operator(ctx);
       return listProducts(input?.query);
     }),
-    movements: protectedProcedure.query(async ({ ctx }) => {
+    movements: protectedProcedure.input(z.object({ from: z.date().optional(), to: z.date().optional() }).refine(({ from, to }) => !from || !to || from <= to, { message: "A data inicial deve ser anterior ou igual à data final" }).optional()).query(async ({ ctx, input }) => {
       await requireRole(ctx, ["administrator", "manager"]);
-      return listStockMovements();
+      return listStockMovements(input?.from, input?.to);
     }),
     saveProduct: protectedProcedure.input(z.object({
       id: z.number().int().positive().optional(),
