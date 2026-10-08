@@ -1021,8 +1021,9 @@ export async function listStockMovements() {
     reason: stockMovements.reason,
     createdAt: stockMovements.createdAt,
     productName: products.name,
+    unit: products.unit,
     userName: users.name,
-  }).from(stockMovements).innerJoin(products, eq(stockMovements.productId, products.id)).leftJoin(users, eq(stockMovements.createdBy, users.id)).orderBy(desc(stockMovements.createdAt)).limit(100);
+  }).from(stockMovements).innerJoin(products, eq(stockMovements.productId, products.id)).leftJoin(users, eq(stockMovements.createdBy, users.id)).orderBy(desc(stockMovements.createdAt), desc(stockMovements.id)).limit(100);
 }
 
 export async function createExpense(input: { description: string; category: string; amountCents: number; method: "pix" | "cash" | "debit" | "credit" | "other"; notes?: string; occurredAt: Date }, userId: number) {
