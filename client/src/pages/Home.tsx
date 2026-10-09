@@ -647,7 +647,10 @@ function StockPage({ products, movements, movementsLoading, movementsError, move
   onAdjust: (product: any) => void;
 }) {
   const [search, setSearch] = useState("");
+  const [movementProduct, setMovementProduct] = useState("all");
   const filtered = products.filter((product) => product.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+  const movementProducts = Array.from(new Set(movements.map((movement) => movement.productName).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  const filteredMovements = movementProduct === "all" ? movements : movements.filter((movement) => movement.productName === movementProduct);
   const low = products.filter((product) => product.stockQuantity <= product.minimumStock);
   return <div className="stock-page">
     <section className="stock-hero"><div><span className="section-kicker">INVENTÁRIO EM TEMPO REAL</span><h2>Controle o que mantém o lounge aceso.</h2><p>Baixas automáticas por comanda e ajustes auditáveis.</p></div><div className="stock-summary"><span><Package size={18} /><b>{products.length}</b> produtos ativos</span><span className="low"><AlertTriangle size={18} /><b>{low.length}</b> em alerta</span></div></section>
@@ -660,6 +663,9 @@ function StockPage({ products, movements, movementsLoading, movementsError, move
           <label className="stock-movement-filter">Período<select value={movementPeriod} onChange={(event) => onPeriodChange(event.target.value as typeof movementPeriod)}>
             <option value="3">Últimos 3 dias</option><option value="7">Últimos 7 dias</option><option value="30">Últimos 30 dias</option><option value="90">Últimos 90 dias</option><option value="custom">Personalizado</option><option value="all">Todo o período</option>
           </select></label>
+          <label className="stock-movement-filter">Produto<select value={movementProduct} onChange={(event) => setMovementProduct(event.target.value)}>
+            <option value="all">Todos os produtos</option>{movementProducts.map((productName) => <option key={productName} value={productName}>{productName}</option>)}
+          </select></label>
           {movementPeriod === "custom" && <div className="stock-movement-date-range">
             <label className="stock-movement-filter">De<input type="date" value={movementFrom} max={movementTo || undefined} onChange={(event) => onMovementFromChange(event.target.value)} /></label>
             <label className="stock-movement-filter">Até<input type="date" value={movementTo} min={movementFrom || undefined} onChange={(event) => onMovementToChange(event.target.value)} /></label>
@@ -667,10 +673,10 @@ function StockPage({ products, movements, movementsLoading, movementsError, move
           <button type="button" className="movement-refresh" onClick={onRefreshMovements} disabled={movementsLoading}>{movementsLoading ? "Carregando…" : "Atualizar"}</button>
         </div>
       </div>
-      {!movementsError && <p className="movement-result-count">{movementsLoading ? "Buscando registros do período…" : `${movements.length} ${movements.length === 1 ? "movimentação encontrada" : "movimentações encontradas"}`}</p>}
-      {movementsError ? <p className="movement-state movement-error">Não foi possível carregar as movimentações: {movementsError}</p> : movementsLoading && movements.length === 0 ? <p className="movement-state">Carregando movimentações…</p> : movements.length === 0 ? <p className="movement-state">Nenhuma movimentação encontrada neste período.</p> : <div className="stock-movements-scroll"><div className="stock-movement-table">
+      {!movementsError && <p className="movement-result-count">{movementsLoading ? "Buscando registros do período…" : `${filteredMovements.length} ${filteredMovements.length === 1 ? "movimentação encontrada" : "movimentações encontradas"}`}</p>}
+      {movementsError ? <p className="movement-state movement-error">Não foi possível carregar as movimentações: {movementsError}</p> : movementsLoading && movements.length === 0 ? <p className="movement-state">Carregando movimentações…</p> : filteredMovements.length === 0 ? <p className="movement-state">{movementProduct === "all" ? "Nenhuma movimentação encontrada neste período." : "Nenhuma movimentação deste produto encontrada no período."}</p> : <div className="stock-movements-scroll"><div className="stock-movement-table">
         <div className="stock-movement-head"><span>Tipo</span><span>Produto</span><span>Quantidade</span><span>Data e horário</span><span>Responsável</span><span>Motivo</span></div>
-        {movements.map((movement) => <div className="stock-movement-row" key={movement.id}>
+        {filteredMovements.map((movement) => <div className="stock-movement-row" key={movement.id}>
           <span><b className={`movement-direction ${movement.direction === "in" ? "movement-in" : "movement-out"}`}>{movement.direction === "in" ? "Entrada" : "Saída"}</b></span>
           <span className="movement-product">{movement.productName}</span>
           <span className={`movement-quantity ${movement.direction === "in" ? "movement-in-text" : "movement-out-text"}`}>{movement.direction === "in" ? "+" : "−"}{movement.quantity} {movement.unit || "un"}</span>
