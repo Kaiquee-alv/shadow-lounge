@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import { formatCpf, isValidCpf, normalizeCpf } from "@shared/cpf";
 import { auditActionLabel, auditDescriptionInPortuguese } from "@shared/audit-labels";
+import { ACCESS_FEATURES, canAccessFeature, DEFAULT_ROLE_PERMISSIONS, type AccessFeature, type RolePermissions } from "@shared/role-permissions";
 import { addDaysToSaoPauloDateKey, firstOfMonthInSaoPaulo, formatDateTimeInSaoPaulo, formatTimeInSaoPaulo, saoPauloDateKey, saoPauloDayEnd, saoPauloDayStart } from "@shared/sao-paulo-time";
 import { cached, createOfflineTab, getOfflineTabById, getOfflineTabByTable, getOfflineTabs, isOffline, offlineTabView, offlineTotals, removeOfflineTab, saveOfflineTab } from "@/lib/offline";
 import { toast } from "sonner";
@@ -254,6 +255,7 @@ export default function Home() {
   const setProductActiveMutation = trpc.inventory.setProductActive.useMutation({ onSuccess: (result) => { refreshOperationalData({ products: true, dashboard: true }); toast.success(result.active ? "Produto ativado" : "Produto desativado"); }, onError: (error) => toast.error(error.message) });
   const createCategoryMutation = trpc.inventory.createCategory.useMutation({ onSuccess: () => { void utils.inventory.categories.invalidate(); setCategoryOpen(false); setCategoryName(""); toast.success("Categoria criada com sucesso"); }, onError: (error) => toast.error(error.message) });
   const updateAccessMutation = trpc.access.update.useMutation({ onSuccess: () => { void utils.access.list.invalidate(); toast.success("Permissão atualizada"); }, onError: (error) => toast.error(error.message) });
+  const updateRolePermissionsMutation = trpc.access.updateRolePermissions.useMutation({ onSuccess: async () => { await workspaceQuery.refetch(); toast.success("Permissões dos perfis atualizadas"); }, onError: (error) => toast.error(error.message) });
   const createPriceRuleMutation = trpc.pricing.createRule.useMutation({ onSuccess: () => { void utils.pricing.rules.invalidate(); toast.success("Preço por horário criado"); }, onError: (error) => toast.error(error.message) });
   const updatePriceRuleMutation = trpc.pricing.updateRule.useMutation({ onSuccess: () => { void utils.pricing.rules.invalidate(); toast.success("Regra de promoção atualizada"); }, onError: (error) => toast.error(error.message) });
   const setPriceRuleActiveMutation = trpc.pricing.setActive.useMutation({ onSuccess: () => { void utils.pricing.rules.invalidate(); toast.success("Status da regra atualizado"); }, onError: (error) => toast.error(error.message) });
@@ -437,16 +439,20 @@ export default function Home() {
   };
 
   const localRole = workspaceQuery.data?.localRole;
-  const visibleNav = nav.filter((item) => {
-    if (localRole === "attendant") return item.id === "tables" || item.id === "customers" || item.id === "reports";
-    if (localRole === "manager") return item.id !== "users";
-    if (localRole === "administrator") return true;
-    return item.id === "tables";
-  });
+  const rolePermissions = workspaceQuery.data?.rolePermissions ?? DEFAULT_ROLE_PERMISSIONS;
+  const hasFeatureAccess = (feature: AccessFeature) => canAccessFeature(localRole, rolePermissions, feature);
+  const visibleNav = nav.filter((item) => item.id === "users" ? localRole === "administrator" : hasFeatureAccess(item.id as AccessFeature));
+  const firstPermittedPage = visibleNav[0]?.id ?? (hasFeatureAccess("settings") ? "settings" : "tables");
+  const canOpenPage = (target: Page) => target === "settings" ? hasFeatureAccess("settings") : target === "users" ? localRole === "administrator" : visibleNav.some((item) => item.id === target);
   useEffect(() => {
     if (!isAuthenticated || !localRole) return;
-    setPage(localRole === "attendant" ? "tables" : localRole === "manager" ? "dashboard" : "products");
+    const preferredPage: Page = localRole === "administrator" ? "products" : localRole === "manager" && hasFeatureAccess("dashboard") ? "dashboard" : firstPermittedPage;
+    setPage(canOpenPage(preferredPage) ? preferredPage : firstPermittedPage);
   }, [isAuthenticated, localRole]);
+  useEffect(() => {
+    if (!localRole) return;
+    if (!canOpenPage(page)) setPage(firstPermittedPage);
+  }, [page, localRole, rolePermissions]);
 
   if (loading) return <div className="loading-screen"><div className="loading-mark"><Flame size={30} /></div><span>Preparando operação</span></div>;
   if (!isAuthenticated) return <LoginScreen credentials={credentials} setCredentials={setCredentials} passwordVisible={loginPasswordVisible} setPasswordVisible={setLoginPasswordVisible} mutation={localLoginMutation} />;
@@ -461,7 +467,7 @@ export default function Home() {
         <div className="shift-pill"><span className="pulse-dot" /> OPERAÇÃO AO VIVO</div>
         <nav>{visibleNav.map(navItem)}</nav>
         <div className="sidebar-bottom">
-          <button className={`nav-item ${page === "settings" ? "nav-item-active" : ""}`} disabled={addItemMutation.isPending || setItemMutation.isPending} onClick={() => setPage("settings")}><Settings size={19} /><span>Configurações</span></button>
+          {hasFeatureAccess("settings") && <button className={`nav-item ${page === "settings" ? "nav-item-active" : ""}`} disabled={addItemMutation.isPending || setItemMutation.isPending} onClick={() => setPage("settings")}><Settings size={19} /><span>Configurações</span></button>}
           {user ? <button className="operator-card" onClick={endSession}><span className="operator-avatar">{(user.name || "O").slice(0, 1)}</span><span><b>{user.name || "Operador"}</b><small>Encerrar sessão</small></span></button> : <button className="login-card" onClick={() => setLoginOpen(true)}><LogIn size={18} /><span>Entrar no sistema</span></button>}
         </div>
       </aside>
@@ -476,6 +482,7 @@ export default function Home() {
         {!isAuthenticated && <div className="demo-banner"><Sparkles size={17} /><span><b>Visão demonstrativa</b> — entre para abrir comandas, registrar pagamentos e persistir os dados.</span><button onClick={() => setLoginOpen(true)}>Acessar operação <ArrowUpRight size={15} /></button></div>}
 
         <div className="page-container">
+          {visibleNav.length === 0 && !hasFeatureAccess("settings") && localRole !== "administrator" ? <section className="panel no-role-permissions"><ShieldCheck size={24} /><b>Seu perfil ainda não tem funcionalidades liberadas.</b><span>Peça ao administrador para habilitar as áreas necessárias.</span></section> : <>
           {page === "dashboard" && <Dashboard dashboard={dashboard} occupiedCount={occupiedCount} tableCount={tables.length} onNavigate={setPage} />}
           {page === "tables" && !activeTab && !selectedTabId && <TablesGrid tables={tables} onSelect={selectTable} isOpening={openTabMutation.isPending} />}
           {page === "tables" && selectedTabId && !activeTab && <div className="loading-screen inline-loading"><div className="loading-mark"><ReceiptText size={24} /></div><span>Carregando comanda...</span></div>}
@@ -485,8 +492,9 @@ export default function Home() {
           {page === "stock" && <StockPage products={products} movements={stockMovementsInput === null ? [] : stockMovementsQuery.data ?? []} movementsLoading={stockMovementsInput !== null && stockMovementsQuery.isLoading} movementsError={stockMovementsInput === null ? "Selecione um intervalo de datas válido." : stockMovementsQuery.error?.message} movementPeriod={stockMovementPeriod} onPeriodChange={setStockMovementPeriod} movementFrom={stockMovementFrom} onMovementFromChange={setStockMovementFrom} movementTo={stockMovementTo} onMovementToChange={setStockMovementTo} onRefreshMovements={() => void stockMovementsQuery.refetch()} onAdjust={(product) => { setStockProduct(product); setStockQty("1"); setStockSheet(true); }} />}
           {page === "finance" && <FinancePage dashboard={dashboard} expenses={expensesQuery.data ?? [{ id: 1, description: "Reposição de bebidas", category: "Fornecedores", amountCents: 12450, method: "pix" as Method, occurredAt: new Date(), userName: "Rafael" }, { id: 2, description: "Conta de energia", category: "Energia", amountCents: 6800, method: "debit" as Method, occurredAt: new Date(Date.now() - 86400000), userName: "Rafael" }]} onNewExpense={() => requireAuth(() => setExpenseOpen(true))} />}
           {page === "reports" && <ReportsPage summary={reportSummaryQuery.data} from={historyFrom} to={historyTo} setFrom={setHistoryFrom} setTo={setHistoryTo} loading={reportSummaryQuery.isLoading} error={reportSummaryQuery.error?.message} onRefresh={() => void reportSummaryQuery.refetch()} />}
-          {page === "users" && <UsersPage audits={auditQuery.data ?? []} users={accessQuery.data ?? []} onUpdate={(input: any) => requireAuth(() => updateAccessMutation.mutate(input))} onCreate={() => setUserCreateOpen(true)} onDelete={(userId: number) => requireAuth(() => deleteUserMutation.mutate({ userId }))} />}
+          {page === "users" && <UsersPage audits={auditQuery.data ?? []} users={accessQuery.data ?? []} rolePermissions={rolePermissions} savingRolePermissions={updateRolePermissionsMutation.isPending} onSaveRolePermissions={(input) => requireAuth(() => updateRolePermissionsMutation.mutate(input))} onUpdate={(input: any) => requireAuth(() => updateAccessMutation.mutate(input))} onCreate={() => setUserCreateOpen(true)} onDelete={(userId: number) => requireAuth(() => deleteUserMutation.mutate({ userId }))} />}
           {page === "settings" && <SettingsPage products={products} rules={pricingRulesQuery.data ?? []} tableLimit={commercialSettingsQuery.data?.maxTables ?? 20} preventNegativeStock={commercialSettingsQuery.data?.preventNegativeStock ?? true} tableLimitSaving={updateTableLimitMutation.isPending} stockPolicySaving={updateNegativeStockPolicyMutation.isPending} onCreateRule={(input: any) => requireAuth(() => createPriceRuleMutation.mutate(input))} onUpdateRule={(input: any) => updatePriceRuleMutation.mutateAsync(input)} updateRuleSaving={updatePriceRuleMutation.isPending} onSetRuleActive={(input: any) => requireAuth(() => setPriceRuleActiveMutation.mutate(input))} onDeleteRule={(input: any) => requireAuth(() => deletePriceRuleMutation.mutate(input))} onUpdateTableLimit={(maxTables) => requireAuth(() => updateTableLimitMutation.mutate({ maxTables }))} onUpdateNegativeStock={(preventNegativeStock) => requireAuth(() => updateNegativeStockPolicyMutation.mutate({ preventNegativeStock }))} />}
+          </>}
         </div>
       </main>
 
@@ -763,8 +771,24 @@ function ReportsPage({ summary, from, to, setFrom, setTo, loading, error, onRefr
     </>}
   </div>;
 }
-function UsersPage({ audits, users, onUpdate, onCreate, onDelete }: { audits: any[]; users: any[]; onUpdate: (input: any) => void; onCreate: () => void; onDelete: (userId: number) => void }) {
-  return <div className="users-page"><section className="page-intro"><div><span className="section-kicker">ACESSO E RASTREABILIDADE</span><h2>Equipe e auditoria.</h2><p>Defina quem pode operar mesas, estoque e financeiro.</p></div></section><section className="role-cards"><div><ShieldCheck size={20} /><b>Administrador</b><span>Acesso completo e controle de permissões</span></div><div><Users size={20} /><b>Gerente</b><span>Operação, estoque, financeiro e regras comerciais</span></div><div><ClipboardList size={20} /><b>Atendente</b><span>Mesas, comandas e pagamentos</span></div></section><section className="panel access-panel"><div className="panel-header"><div><span className="section-kicker">PERMISSÕES</span><h3>Usuários cadastrados</h3></div><Button onClick={onCreate}><Plus size={16} /> Novo usuário</Button></div>{users.length ? users.map((item: any) => <div className="access-row" key={item.id}><div><b>{item.name || item.username || "Usuário"}</b><small>{item.email || item.username || "Acesso local"}</small></div><select value={item.localRole || "attendant"} onChange={(e) => onUpdate({ userId: item.id, localRole: e.target.value, active: item.active !== false })}><option value="administrator">Administrador</option><option value="manager">Gerente</option><option value="attendant">Atendente</option></select><label className="checkbox-line"><input type="checkbox" checked={item.active !== false} onChange={(e) => onUpdate({ userId: item.id, localRole: item.localRole || "attendant", active: e.target.checked })} /><span>Ativo</span></label>{item.username !== "admin" ? <button className="access-delete" title="Excluir usuário" aria-label="Excluir usuário" onClick={() => { if (window.confirm(`Excluir o usuário ${item.name || item.username}? O acesso será removido e o histórico será preservado.`)) onDelete(item.id); }}><Trash2 size={15} /></button> : <span className="protected-access">Admin protegido</span>}</div>) : <p className="empty-inline">Nenhum usuário cadastrado.</p>}</section><section className="panel audit-panel"><div className="panel-header"><div><span className="section-kicker">REGISTROS PROTEGIDOS</span><h3>Auditoria recente</h3><p className="panel-help">Histórico imutável: os registros não podem ser editados nem excluídos. Exibindo até 100 ações mais recentes.</p></div></div>{audits.length ? audits.map((audit) => <div className="audit-row" key={audit.id}><span className="audit-action">{auditActionLabel(audit.action)}</span><p>{auditDescriptionInPortuguese(audit.description)}<small>{audit.userName || "Operador"} · {dateTime(audit.createdAt)}</small></p></div>) : <div className="empty-audit"><ShieldCheck size={22} /><div><b>As ações relevantes serão registradas aqui.</b><span>Abra uma comanda, ajuste estoque ou receba um pagamento para gerar o histórico.</span></div></div>}</section></div>;
+function UsersPage({ audits, users, rolePermissions, savingRolePermissions, onSaveRolePermissions, onUpdate, onCreate, onDelete }: {
+  audits: any[]; users: any[]; rolePermissions: RolePermissions; savingRolePermissions: boolean;
+  onSaveRolePermissions: (input: RolePermissions) => void; onUpdate: (input: any) => void; onCreate: () => void; onDelete: (userId: number) => void;
+}) {
+  const [draft, setDraft] = useState<RolePermissions>(rolePermissions);
+  useEffect(() => { setDraft(rolePermissions); }, [rolePermissions]);
+  const toggleFeature = (role: "manager" | "attendant", feature: AccessFeature, checked: boolean) => {
+    setDraft((current) => ({ ...current, [role]: checked ? Array.from(new Set([...current[role], feature])) : current[role].filter((item) => item !== feature) }));
+  };
+  const hasChanges = (["manager", "attendant"] as const).some((role) => ACCESS_FEATURES.some(({ id }) => draft[role].includes(id) !== rolePermissions[role].includes(id)));
+  return <div className="users-page"><section className="page-intro"><div><span className="section-kicker">ACESSO E RASTREABILIDADE</span><h2>Equipe e auditoria.</h2><p>Defina quem pode acessar cada funcionalidade por perfil.</p></div></section>
+    <section className="panel role-permissions-panel"><div className="panel-header"><div><span className="section-kicker">CONTROLE DE ACESSO</span><h3>Permissões por perfil</h3><p className="panel-help">As alterações valem para todos os usuários com o perfil selecionado e também são verificadas no servidor.</p></div><ShieldCheck size={19} /></div>
+      <div className="role-permissions-grid"><section className="role-permission-card"><div><Users size={18} /><span><b>Gerente</b><small>Personalize as áreas disponíveis para os gerentes.</small></span></div>{ACCESS_FEATURES.map(({ id, label, description }) => <label className="role-permission-option" key={`manager-${id}`}><input type="checkbox" checked={draft.manager.includes(id)} onChange={(event) => toggleFeature("manager", id, event.target.checked)} /><span><b>{label}</b><small>{description}</small></span></label>)}</section>
+        <section className="role-permission-card"><div><ClipboardList size={18} /><span><b>Atendente</b><small>Personalize as áreas disponíveis para os atendentes.</small></span></div>{ACCESS_FEATURES.map(({ id, label, description }) => <label className="role-permission-option" key={`attendant-${id}`}><input type="checkbox" checked={draft.attendant.includes(id)} onChange={(event) => toggleFeature("attendant", id, event.target.checked)} /><span><b>{label}</b><small>{description}</small></span></label>)}</section></div>
+      <div className="role-permissions-footer"><p><b>Administrador:</b> mantém acesso completo e exclusivo à gestão de usuários e permissões.</p><Button onClick={() => onSaveRolePermissions(draft)} disabled={!hasChanges || savingRolePermissions}>{savingRolePermissions ? "Salvando…" : "Salvar permissões"}</Button></div>
+    </section>
+    <section className="panel access-panel"><div className="panel-header"><div><span className="section-kicker">USUÁRIOS</span><h3>Usuários cadastrados</h3></div><Button onClick={onCreate}><Plus size={16} /> Novo usuário</Button></div>{users.length ? users.map((item: any) => <div className="access-row" key={item.id}><div><b>{item.name || item.username || "Usuário"}</b><small>{item.email || item.username || "Acesso local"}</small></div><select value={item.localRole || "attendant"} onChange={(e) => onUpdate({ userId: item.id, localRole: e.target.value, active: item.active !== false })}><option value="manager">Gerente</option><option value="administrator">Administrador</option><option value="attendant">Atendente</option></select><label className="checkbox-line"><input type="checkbox" checked={item.active !== false} onChange={(e) => onUpdate({ userId: item.id, localRole: item.localRole || "attendant", active: e.target.checked })} /><span>Ativo</span></label>{item.username !== "admin" ? <button className="access-delete" title="Excluir usuário" aria-label="Excluir usuário" onClick={() => { if (window.confirm(`Excluir o usuário ${item.name || item.username}? O acesso será removido e o histórico será preservado.`)) onDelete(item.id); }}><Trash2 size={15} /></button> : <span className="protected-access">Admin protegido</span>}</div>) : <p className="empty-inline">Nenhum usuário cadastrado.</p>}</section>
+    <section className="panel audit-panel"><div className="panel-header"><div><span className="section-kicker">REGISTROS PROTEGIDOS</span><h3>Auditoria recente</h3><p className="panel-help">Histórico imutável: os registros não podem ser editados nem excluídos. Exibindo até 100 ações mais recentes.</p></div></div>{audits.length ? audits.map((audit) => <div className="audit-row" key={audit.id}><span className="audit-action">{auditActionLabel(audit.action)}</span><p>{auditDescriptionInPortuguese(audit.description)}<small>{audit.userName || "Operador"} · {dateTime(audit.createdAt)}</small></p></div>) : <div className="empty-audit"><ShieldCheck size={22} /><div><b>As ações relevantes serão registradas aqui.</b><span>Abra uma comanda, ajuste estoque ou receba um pagamento para gerar o histórico.</span></div></div>}</section></div>;
 }
 
 function SettingsPage({ products, rules, tableLimit, preventNegativeStock, tableLimitSaving, stockPolicySaving, updateRuleSaving, onCreateRule, onUpdateRule, onSetRuleActive, onDeleteRule, onUpdateTableLimit, onUpdateNegativeStock }: {

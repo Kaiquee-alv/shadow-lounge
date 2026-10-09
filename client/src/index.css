@@ -639,3 +639,25 @@ h3 { font-size: 17px; font-weight: 700; }
   .movement-refresh { min-height: 36px; }
   .movement-result-count { padding-left: 14px; padding-right: 14px; }
 }
+
+.role-permissions-panel { margin-bottom: 16px; overflow: hidden; }
+.role-permissions-grid { padding: 18px 20px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.role-permission-card { min-width: 0; padding: 15px; background: #191a21; border: 1px solid #292a34; border-radius: 11px; }
+.role-permission-card > div:first-child { margin-bottom: 8px; display: flex; align-items: center; gap: 10px; color: #dda947; }
+.role-permission-card > div:first-child span, .role-permission-option > span { min-width: 0; display: grid; gap: 3px; }
+.role-permission-card > div:first-child b { color: #e4ded4; font-size: 13px; }
+.role-permission-card > div:first-child small, .role-permission-option small { color: #898791; font-size: 10px; line-height: 1.45; }
+.role-permission-option { padding: 10px 0; display: flex; align-items: flex-start; gap: 10px; border-top: 1px solid #292a34; cursor: pointer; }
+.role-permission-option input { width: 16px; height: 16px; margin: 2px 0 0; flex: 0 0 auto; accent-color: #dda947; }
+.role-permission-option b { color: #e1dcd3; font-size: 11px; }
+.role-permissions-footer { padding: 0 20px 18px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.role-permissions-footer p { margin: 0; color: #9996a0; font-size: 11px; }
+.role-permissions-footer p b { color: #e4ded4; }
+.no-role-permissions { min-height: 210px; display: grid; place-content: center; justify-items: center; gap: 9px; text-align: center; color: #dda947; }
+.no-role-permissions b { color: #e4ded4; font-size: 14px; }
+.no-role-permissions span { color: #9996a0; font-size: 12px; }
+@media (max-width: 700px) {
+  .role-permissions-grid { padding: 14px; grid-template-columns: 1fr; }
+  .role-permissions-footer { padding: 0 14px 15px; align-items: stretch; flex-direction: column; }
+  .role-permissions-footer button { width: 100%; }
+}

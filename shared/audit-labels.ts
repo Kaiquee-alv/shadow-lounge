@@ -26,6 +26,7 @@ const labels: Record<string, string> = {
   CREATE_USER: "Usuário cadastrado",
   DELETE_USER: "Acesso de usuário removido",
   UPDATE_ACCESS: "Permissão atualizada",
+  UPDATE_ROLE_PERMISSIONS: "Permissões dos perfis atualizadas",
   CREATE_CUSTOMER: "Cliente cadastrado",
   UPDATE_CUSTOMER: "Cliente atualizado",
   DEACTIVATE_CUSTOMER: "Cliente desativado",

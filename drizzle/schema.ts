@@ -4,6 +4,7 @@ import {
   index,
   serial,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -272,6 +273,7 @@ export const settings = pgTable("settings", {
   happyHourStart: varchar("happyHourStart", { length: 5 }).default("17:00").notNull(),
   happyHourEnd: varchar("happyHourEnd", { length: 5 }).default("19:00").notNull(),
   happyHourDiscountPercent: integer("happyHourDiscountPercent").default(10).notNull(),
+  rolePermissions: jsonb("rolePermissions").$type<{ manager: string[]; attendant: string[] }>().notNull().default(sql`'{"manager":["dashboard","tables","customers","products","stock","finance","reports","settings"],"attendant":["tables","customers","reports"]}'::jsonb`),
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
 });
 

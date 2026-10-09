@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   listCustomers: vi.fn(),
   saveCustomer: vi.fn(),
   deleteCustomer: vi.fn(),
+  getRolePermissions: vi.fn(),
 }));
 
 vi.mock("./db.js", async (importOriginal) => {
@@ -17,10 +18,12 @@ vi.mock("./db.js", async (importOriginal) => {
     listCustomers: mocks.listCustomers,
     saveCustomer: mocks.saveCustomer,
     deleteCustomer: mocks.deleteCustomer,
+    getRolePermissions: mocks.getRolePermissions,
   };
 });
 
 import { appRouter } from "./routers.js";
+import { DEFAULT_ROLE_PERMISSIONS } from "@shared/role-permissions";
 
 const caller = appRouter.createCaller({
   user: { id: 52, role: "user", name: "Atendente" },
@@ -32,6 +35,7 @@ describe("permissões de atendente para clientes e relatórios", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getLocalRole.mockResolvedValue({ localRole: "attendant", active: true });
+    mocks.getRolePermissions.mockResolvedValue(DEFAULT_ROLE_PERMISSIONS);
     mocks.getReportSummary.mockResolvedValue({ sales: [], receipts: [] });
     mocks.listCustomers.mockResolvedValue([{ id: 23, name: "Cliente" }]);
     mocks.saveCustomer.mockResolvedValue({ id: 24, success: true });
@@ -50,6 +54,13 @@ describe("permissões de atendente para clientes e relatórios", () => {
     const result = await caller.reports.summary({});
     expect(result).toEqual({ sales: [], receipts: [] });
     expect(mocks.getReportSummary).toHaveBeenCalledOnce();
+  });
+
+
+  it("bloqueia chamadas da API quando a funcionalidade foi removida do perfil", async () => {
+    mocks.getRolePermissions.mockResolvedValue({ ...DEFAULT_ROLE_PERMISSIONS, attendant: [] });
+    await expect(caller.customers.list()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.listCustomers).not.toHaveBeenCalled();
   });
 
   it("permite desativar um cliente pela operação de cliente", async () => {

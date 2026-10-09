@@ -24,6 +24,7 @@ import {
 import { ENV } from "./_core/env.js";
 import { isValidCpf, normalizeCpf } from "@shared/cpf";
 import { auditRoleLabel } from "@shared/audit-labels";
+import { ACCESS_FEATURES, DEFAULT_ROLE_PERMISSIONS, type AccessFeature, type RolePermissions } from "@shared/role-permissions";
 import { calculateReportFinancialTotals } from "./report-financial-utils.js";
 import { priceRuleAppliesAt, saoPauloClock, timeInWindow, weekdaysFromMask, weekdaysToMask } from "./price-rule-utils.js";
 import { planTabTotalAdjustment } from "./tab-adjustment-utils.js";
@@ -112,6 +113,7 @@ async function initializeInitialData() {
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerId" integer REFERENCES "customers"("id")`);
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
+  await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "rolePermissions" jsonb NOT NULL DEFAULT '{"manager":["dashboard","tables","customers","products","stock","finance","reports","settings"],"attendant":["tables","customers","reports"]}'::jsonb`);
   // Regras criadas antes dos dias da semana continuam valendo todos os dias.
   await db.execute(sql`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "daysOfWeek" integer[] NOT NULL DEFAULT ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`);
   await db.execute(sql`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "weekdaysMask" integer NOT NULL DEFAULT 127`);
@@ -164,7 +166,7 @@ async function initializeInitialData() {
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({ target: productCategories.name,
     set: { active: true },
   });
-  await db.insert(settings).values({ id: 1, preventNegativeStock: true, maxTables: 20 }).onConflictDoNothing({ target: settings.id });
+  await db.insert(settings).values({ id: 1, preventNegativeStock: true, maxTables: 20, rolePermissions: DEFAULT_ROLE_PERMISSIONS }).onConflictDoNothing({ target: settings.id });
 
 
 }
@@ -1325,6 +1327,40 @@ export async function deleteProductPriceRule(ruleId: number, userId: number) {
   return { success: true };
 }
 
+
+export async function getRolePermissions(): Promise<RolePermissions> {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  await ensureInitialData();
+  const rows = await db.select({ rolePermissions: settings.rolePermissions }).from(settings).limit(1);
+  const saved = rows[0]?.rolePermissions as RolePermissions | undefined;
+  const validFeatures = new Set(ACCESS_FEATURES.map(({ id }) => id));
+  const normalize = (value: unknown, fallback: AccessFeature[]): AccessFeature[] => {
+    if (!Array.isArray(value)) return fallback;
+    return Array.from(new Set(value.filter((item): item is AccessFeature => typeof item === "string" && validFeatures.has(item as AccessFeature))));
+  };
+  return {
+    manager: normalize(saved?.manager, DEFAULT_ROLE_PERMISSIONS.manager),
+    attendant: normalize(saved?.attendant, DEFAULT_ROLE_PERMISSIONS.attendant),
+  };
+}
+
+export async function updateRolePermissions(input: RolePermissions, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  await ensureInitialData();
+  const validFeatures = new Set(ACCESS_FEATURES.map(({ id }) => id));
+  const normalized: RolePermissions = {
+    manager: Array.from(new Set(input.manager.filter((feature) => validFeatures.has(feature)))),
+    attendant: Array.from(new Set(input.attendant.filter((feature) => validFeatures.has(feature)))),
+  };
+  await db.insert(settings).values({ id: 1, rolePermissions: normalized }).onConflictDoUpdate({
+    target: settings.id,
+    set: { rolePermissions: normalized, updatedAt: new Date() },
+  });
+  await writeAudit(userId, "UPDATE_ROLE_PERMISSIONS", "settings", 1, "Atualizou as permissões dos perfis Gerente e Atendente");
+  return normalized;
+}
 
 export async function getCommercialSettings() {
   const db = await getDb();
