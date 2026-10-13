@@ -214,7 +214,7 @@ export const appRouter = router({
       newTotalCents: z.number().int().min(0).max(100_000_000),
       reason: z.string().trim().min(5).max(500),
     })).mutation(async ({ ctx, input }) => {
-      await requireFeature(ctx, "tables");
+      await requireFeature(ctx, "adjustTabValue");
       return adjustTabValue(input, ctx.user.id);
     }),
   }),

@@ -662,39 +662,39 @@ h3 { font-size: 17px; font-weight: 700; }
   .role-permissions-footer button { width: 100%; }
 }
 
+
 .stock-valuation-panel { margin-bottom: 18px; overflow: hidden; }
-.stock-valuation-heading { padding: 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); }
-.stock-valuation-heading h3 { margin: 5px 0 0; color: var(--ink); font-size: 17px; }
-.stock-valuation-heading p { max-width: 720px; margin: 6px 0 0; color: var(--ink-muted); font-size: 11px; line-height: 1.55; }
-.stock-valuation-summary { padding: 16px 20px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
-.stock-valuation-summary article { min-width: 0; padding: 15px; display: grid; gap: 5px; background: #fbfcfd; border: 1px solid var(--line); border-radius: 10px; }
-.stock-valuation-summary article > span { color: var(--ink-muted); font-size: 10px; font-weight: 750; }
-.stock-valuation-summary article > strong { color: var(--ink); font-size: clamp(17px, 2.2vw, 23px); line-height: 1.2; overflow-wrap: anywhere; }
-.stock-valuation-summary article > strong small { color: var(--ink-muted); font-size: 11px; font-weight: 500; }
-.stock-valuation-summary article > small { color: var(--ink-muted); font-size: 10px; line-height: 1.4; }
-.stock-valuation-toolbar { padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); }
-.stock-valuation-toolbar .search-field { width: min(360px, 100%); margin: 0; }
-.stock-valuation-scroll { overflow-x: auto; }
-.stock-valuation-table { width: 100%; min-width: 850px; border-collapse: collapse; text-align: left; }
-.stock-valuation-table th { padding: 11px 14px; color: #7b8492; background: #fbfcfd; border-bottom: 1px solid var(--line); font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
-.stock-valuation-table th:first-child, .stock-valuation-table td:first-child { padding-left: 20px; }
-.stock-valuation-table td { padding: 12px 14px; color: #475467; border-bottom: 1px solid var(--line); font-size: 11px; white-space: nowrap; }
+.stock-valuation-toolbar { padding: 15px 20px 5px; }
+.stock-valuation-toolbar .search-field { width: min(100%, 620px); margin: 0; }
+.stock-valuation-overview { padding: 16px 20px 12px; }
+.stock-valuation-overview h3 { margin: 0; color: var(--ink); font-size: clamp(21px, 3vw, 28px); font-weight: 800; letter-spacing: -.025em; }
+.stock-valuation-overview > span { display: block; margin-top: 3px; color: var(--ink); font-size: 14px; font-weight: 650; }
+.stock-valuation-metrics-scroll { overflow-x: auto; }
+.stock-valuation-summary { min-width: 560px; padding: 12px 20px 17px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.stock-valuation-summary article { min-width: 0; padding: 0 13px; display: grid; align-content: start; gap: 4px; border-right: 1px solid var(--line); }
+.stock-valuation-summary article:first-child { padding-left: 0; }
+.stock-valuation-summary article:last-child { border-right: 0; }
+.stock-valuation-summary article > span { color: var(--ink-muted); font-size: 12px; white-space: nowrap; }
+.stock-valuation-summary article > strong { color: var(--ink); font-size: clamp(16px, 2vw, 22px); line-height: 1.25; white-space: nowrap; }
+.stock-valuation-scroll { max-height: 450px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border-top: 1px solid var(--line); }
+.stock-valuation-table { width: 100%; border-collapse: collapse; text-align: left; }
+.stock-valuation-table td { height: 90px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
 .stock-valuation-table tbody tr:last-child td { border-bottom: 0; }
 .stock-valuation-table tbody tr:hover { background: #fffdf8; }
-.stock-valuation-table td b { color: var(--ink); font-weight: 800; }
-.stock-valuation-table td:first-child { min-width: 180px; white-space: normal; }
-.stock-valuation-table td:first-child b, .stock-valuation-table td:first-child small { display: block; }
-.stock-valuation-table td:first-child small { margin-top: 3px; color: var(--ink-muted); font-size: 9px; }
+.stock-valuation-product-title { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.stock-valuation-product-title b { min-width: 0; overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.stock-valuation-product-title span { flex: 0 0 auto; color: #98a0ad; font-size: 11px; }
+.stock-valuation-product-details { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px 20px; color: #475467; font-size: 12px; }
 .stock-valuation-empty { border-top: 1px solid var(--line); }
-.stock-valuation-note { margin: 0; padding: 0 20px 14px; color: var(--ink-muted); font-size: 10px; }
 @media (max-width: 640px) {
-  .stock-valuation-heading { padding: 16px; flex-direction: column; }
-  .stock-valuation-heading button { width: 100%; }
-  .stock-valuation-summary { padding: 12px 14px; grid-template-columns: 1fr; }
-  .stock-valuation-summary article { padding: 12px; }
-  .stock-valuation-toolbar { padding: 12px 14px; align-items: stretch; flex-direction: column; }
-  .stock-valuation-toolbar .search-field { width: 100%; }
-  .stock-valuation-toolbar [data-slot="badge"] { align-self: flex-start; }
-  .stock-valuation-table th:first-child, .stock-valuation-table td:first-child { padding-left: 14px; }
-  .stock-valuation-note { padding-right: 14px; padding-left: 14px; }
+  .stock-valuation-toolbar { padding: 14px 15px 4px; }
+  .stock-valuation-overview { padding: 15px; }
+  .stock-valuation-summary { min-width: 510px; padding: 10px 15px 16px; }
+  .stock-valuation-summary article { padding: 0 10px; }
+  .stock-valuation-summary article > span { font-size: 11px; }
+  .stock-valuation-summary article > strong { font-size: 17px; }
+  .stock-valuation-scroll { max-height: 520px; }
+  .stock-valuation-table td { height: 104px; padding: 12px 15px; }
+  .stock-valuation-product-title b { font-size: 13px; }
+  .stock-valuation-product-details { font-size: 11px; }
 }

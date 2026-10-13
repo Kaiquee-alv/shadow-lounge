@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   saveCustomer: vi.fn(),
   deleteCustomer: vi.fn(),
   getRolePermissions: vi.fn(),
+  adjustTabValue: vi.fn(),
 }));
 
 vi.mock("./db.js", async (importOriginal) => {
@@ -19,6 +20,7 @@ vi.mock("./db.js", async (importOriginal) => {
     saveCustomer: mocks.saveCustomer,
     deleteCustomer: mocks.deleteCustomer,
     getRolePermissions: mocks.getRolePermissions,
+    adjustTabValue: mocks.adjustTabValue,
   };
 });
 
@@ -40,6 +42,7 @@ describe("permissões de atendente para clientes e relatórios", () => {
     mocks.listCustomers.mockResolvedValue([{ id: 23, name: "Cliente" }]);
     mocks.saveCustomer.mockResolvedValue({ id: 24, success: true });
     mocks.deleteCustomer.mockResolvedValue({ success: true });
+    mocks.adjustTabValue.mockResolvedValue({ success: true });
   });
 
   it("permite listar e cadastrar clientes mantendo a validação de CPF", async () => {
@@ -61,6 +64,19 @@ describe("permissões de atendente para clientes e relatórios", () => {
     mocks.getRolePermissions.mockResolvedValue({ ...DEFAULT_ROLE_PERMISSIONS, attendant: [] });
     await expect(caller.customers.list()).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(mocks.listCustomers).not.toHaveBeenCalled();
+  });
+
+  it("só permite alterar o total da comanda quando a permissão específica está concedida", async () => {
+    const input = { tabId: 12, newTotalCents: 5500, reason: "Ajuste autorizado" };
+    await expect(caller.lounge.adjustTabValue(input)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.adjustTabValue).not.toHaveBeenCalled();
+
+    mocks.getRolePermissions.mockResolvedValue({
+      ...DEFAULT_ROLE_PERMISSIONS,
+      attendant: [...DEFAULT_ROLE_PERMISSIONS.attendant, "adjustTabValue"],
+    });
+    await expect(caller.lounge.adjustTabValue(input)).resolves.toEqual({ success: true });
+    expect(mocks.adjustTabValue).toHaveBeenCalledWith(input, 52);
   });
 
   it("permite desativar um cliente pela operação de cliente", async () => {

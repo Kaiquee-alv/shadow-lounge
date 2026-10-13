@@ -1,6 +1,7 @@
 export const ACCESS_FEATURES = [
   { id: "dashboard", label: "Visão geral", description: "Indicadores e resumo da operação" },
   { id: "tables", label: "Mesas e comandas", description: "Abrir mesas, comandas, lançar itens e receber pagamentos" },
+  { id: "adjustTabValue", label: "Alterar valor da comanda", description: "Aplicar ajuste manual ao total de uma comanda, com justificativa registrada" },
   { id: "customers", label: "Clientes", description: "Consultar, cadastrar e gerenciar clientes" },
   { id: "products", label: "Produtos", description: "Catálogo, categorias, preços e cadastro de produtos" },
   { id: "stock", label: "Estoque", description: "Consultar movimentos e ajustar entradas e saídas" },
