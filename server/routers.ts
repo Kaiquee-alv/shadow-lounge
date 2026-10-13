@@ -235,9 +235,11 @@ export const appRouter = router({
       }
       return listProducts(input?.query);
     }),
-    movements: protectedProcedure.input(z.object({ from: z.date().optional(), to: z.date().optional() }).refine(({ from, to }) => !from || !to || from <= to, { message: "A data inicial deve ser anterior ou igual à data final" }).optional()).query(async ({ ctx, input }) => {
+    movements: protectedProcedure.input(z.object({
+      from: z.date().optional(), to: z.date().optional(), productId: z.number().int().positive().optional(), page: z.number().int().min(1).default(1),
+    }).refine(({ from, to }) => !from || !to || from <= to, { message: "A data inicial deve ser anterior ou igual à data final" }).optional()).query(async ({ ctx, input }) => {
       await requireFeature(ctx, "stock");
-      return listStockMovements(input?.from, input?.to);
+      return listStockMovements({ ...input, page: input?.page ?? 1 });
     }),
     saveProduct: protectedProcedure.input(z.object({
       id: z.number().int().positive().optional(),

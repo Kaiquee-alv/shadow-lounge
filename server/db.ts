@@ -1016,21 +1016,35 @@ export async function adjustStock(input: { productId: number; quantity: number; 
   });
 }
 
-export async function listStockMovements(from?: Date, to?: Date) {
+export async function listStockMovements(input: { from?: Date; to?: Date; productId?: number; page: number }) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
-  return db.select({
-    id: stockMovements.id,
-    quantity: stockMovements.quantity,
-    direction: stockMovements.direction,
-    reason: stockMovements.reason,
-    createdAt: stockMovements.createdAt,
-    productName: products.name,
-    unit: products.unit,
-    userName: users.name,
-  }).from(stockMovements).innerJoin(products, eq(stockMovements.productId, products.id)).leftJoin(users, eq(stockMovements.createdBy, users.id))
-    .where(and(from ? gte(stockMovements.createdAt, from) : undefined, to ? lte(stockMovements.createdAt, to) : undefined))
-    .orderBy(desc(stockMovements.createdAt), desc(stockMovements.id)).limit(100);
+  const pageSize = 25;
+  const page = Math.max(1, Math.floor(input.page));
+  const where = and(
+    input.from ? gte(stockMovements.createdAt, input.from) : undefined,
+    input.to ? lte(stockMovements.createdAt, input.to) : undefined,
+    input.productId ? eq(stockMovements.productId, input.productId) : undefined,
+  );
+  const [countRows, items] = await Promise.all([
+    db.select({ count: sql<number>`count(*)::int` }).from(stockMovements).innerJoin(products, eq(stockMovements.productId, products.id)).where(where),
+    db.select({
+      id: stockMovements.id,
+      quantity: stockMovements.quantity,
+      direction: stockMovements.direction,
+      reason: stockMovements.reason,
+      createdAt: stockMovements.createdAt,
+      productName: products.name,
+      unit: products.unit,
+      userName: users.name,
+    }).from(stockMovements).innerJoin(products, eq(stockMovements.productId, products.id)).leftJoin(users, eq(stockMovements.createdBy, users.id))
+      .where(where)
+      .orderBy(desc(stockMovements.createdAt), desc(stockMovements.id))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
+  ]);
+  const total = Number(countRows[0]?.count ?? 0);
+  return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
 }
 
 export async function createExpense(input: { description: string; category: string; amountCents: number; method: "pix" | "cash" | "debit" | "credit" | "other"; notes?: string; occurredAt: Date }, userId: number) {

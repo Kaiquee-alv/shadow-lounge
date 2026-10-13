@@ -698,3 +698,21 @@ h3 { font-size: 17px; font-weight: 700; }
   .stock-valuation-product-title b { font-size: 13px; }
   .stock-valuation-product-details { font-size: 11px; }
 }
+
+.stock-products-panel { overflow: hidden; }
+.stock-products-scroll { max-height: 365px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.stock-products-scroll .inventory-head { position: sticky; top: 0; z-index: 2; }
+.stock-movements-scroll { max-height: 350px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.stock-movement-head { position: sticky; top: 0; z-index: 2; }
+.stock-movement-pagination { padding: 11px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); }
+.stock-movement-pagination > span { color: var(--ink-muted); font-size: 10px; }
+.stock-movement-pagination > div { display: flex; gap: 8px; }
+.stock-movement-pagination button { min-height: 34px; padding: 7px 12px; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 8px; font-size: 11px; font-weight: 700; }
+.stock-movement-pagination button:disabled { cursor: not-allowed; opacity: .45; }
+@media (max-width: 640px) {
+  .stock-products-scroll { max-height: 365px; }
+  .stock-movements-scroll { max-height: 350px; }
+  .stock-movement-pagination { padding: 10px 14px; align-items: flex-start; flex-direction: column; }
+  .stock-movement-pagination > div { width: 100%; }
+  .stock-movement-pagination button { flex: 1; }
+}

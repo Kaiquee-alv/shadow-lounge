@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   deleteCustomer: vi.fn(),
   getRolePermissions: vi.fn(),
   adjustTabValue: vi.fn(),
+  listStockMovements: vi.fn(),
 }));
 
 vi.mock("./db.js", async (importOriginal) => {
@@ -21,6 +22,7 @@ vi.mock("./db.js", async (importOriginal) => {
     deleteCustomer: mocks.deleteCustomer,
     getRolePermissions: mocks.getRolePermissions,
     adjustTabValue: mocks.adjustTabValue,
+    listStockMovements: mocks.listStockMovements,
   };
 });
 
@@ -43,6 +45,7 @@ describe("permissões de atendente para clientes e relatórios", () => {
     mocks.saveCustomer.mockResolvedValue({ id: 24, success: true });
     mocks.deleteCustomer.mockResolvedValue({ success: true });
     mocks.adjustTabValue.mockResolvedValue({ success: true });
+    mocks.listStockMovements.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 25, totalPages: 0 });
   });
 
   it("permite listar e cadastrar clientes mantendo a validação de CPF", async () => {
@@ -77,6 +80,19 @@ describe("permissões de atendente para clientes e relatórios", () => {
     });
     await expect(caller.lounge.adjustTabValue(input)).resolves.toEqual({ success: true });
     expect(mocks.adjustTabValue).toHaveBeenCalledWith(input, 52);
+  });
+
+  it("consulta páginas de movimentações filtradas pelo período e pelo produto", async () => {
+    const from = new Date("2026-10-12T03:00:00.000Z");
+    const to = new Date("2026-10-13T02:59:59.999Z");
+    const resultPage = { items: [{ id: 26 }], total: 31, page: 2, pageSize: 25, totalPages: 2 };
+    mocks.getRolePermissions.mockResolvedValue({
+      ...DEFAULT_ROLE_PERMISSIONS,
+      attendant: [...DEFAULT_ROLE_PERMISSIONS.attendant, "stock"],
+    });
+    mocks.listStockMovements.mockResolvedValue(resultPage);
+    await expect(caller.inventory.movements({ from, to, productId: 9, page: 2 })).resolves.toEqual(resultPage);
+    expect(mocks.listStockMovements).toHaveBeenCalledWith({ from, to, productId: 9, page: 2 });
   });
 
   it("permite desativar um cliente pela operação de cliente", async () => {

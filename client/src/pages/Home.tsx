@@ -117,8 +117,10 @@ export default function Home() {
   const [tipEnabled, setTipEnabled] = useState(false);
   const [historyFrom, setHistoryFrom] = useState(() => firstOfMonthInSaoPaulo(new Date()));
   const [historyTo, setHistoryTo] = useState(() => saoPauloDateKey(new Date()));
-  const [stockMovementPeriod, setStockMovementPeriod] = useState<"3" | "7" | "30" | "90" | "all" | "custom">("3");
-  const [stockMovementFrom, setStockMovementFrom] = useState(() => addDaysToSaoPauloDateKey(saoPauloDateKey(new Date()), -2));
+  const [stockMovementPeriod, setStockMovementPeriod] = useState<"2" | "3" | "7" | "30" | "90" | "all" | "custom">("2");
+  const [stockMovementProduct, setStockMovementProduct] = useState("all");
+  const [stockMovementsPage, setStockMovementsPage] = useState(1);
+  const [stockMovementFrom, setStockMovementFrom] = useState(() => addDaysToSaoPauloDateKey(saoPauloDateKey(new Date()), -1));
   const [stockMovementTo, setStockMovementTo] = useState(() => saoPauloDateKey(new Date()));
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<Method>("pix");
@@ -148,7 +150,7 @@ export default function Home() {
   const tablesQuery = trpc.lounge.tables.useQuery(undefined, { enabled: isAuthenticated && (page === "tables" || page === "dashboard"), retry: false, staleTime: 5000, refetchInterval: isAuthenticated && page === "tables" && !selectedTabId ? 10000 : false });
   const productsQuery = trpc.inventory.products.useQuery({}, { enabled: isAuthenticated && (page === "tables" || page === "products" || page === "stock"), retry: false, staleTime: 15000 });
   const stockMovementsInput = useMemo(() => {
-    if (stockMovementPeriod === "all") return undefined;
+    if (stockMovementPeriod === "all") return {};
     const toKey = stockMovementPeriod === "custom" ? stockMovementTo : saoPauloDateKey(new Date());
     const fromKey = stockMovementPeriod === "custom"
       ? stockMovementFrom
@@ -156,7 +158,12 @@ export default function Home() {
     if (!fromKey || !toKey || fromKey > toKey) return null;
     return { from: saoPauloDayStart(fromKey), to: saoPauloDayEnd(toKey) };
   }, [stockMovementPeriod, stockMovementFrom, stockMovementTo]);
-  const stockMovementsQuery = trpc.inventory.movements.useQuery(stockMovementsInput ?? undefined, { enabled: isAuthenticated && page === "stock" && stockMovementsInput !== null, retry: false });
+  const stockMovementsQueryInput = useMemo(() => stockMovementsInput === null ? undefined : ({
+    ...stockMovementsInput,
+    page: stockMovementsPage,
+    ...(stockMovementProduct === "all" ? {} : { productId: Number(stockMovementProduct) }),
+  }), [stockMovementsInput, stockMovementsPage, stockMovementProduct]);
+  const stockMovementsQuery = trpc.inventory.movements.useQuery(stockMovementsQueryInput, { enabled: isAuthenticated && page === "stock" && stockMovementsInput !== null, retry: false });
   const categoriesQuery = trpc.inventory.categories.useQuery(undefined, { enabled: isAuthenticated && (productOpen || page === "products"), retry: false });
   const commercialSettingsQuery = trpc.commercial.settings.useQuery(undefined, { enabled: isAuthenticated && page === "settings", retry: false });
   const customersQuery = trpc.customers.list.useQuery(undefined, { enabled: isAuthenticated && page === "customers", retry: false, staleTime: 60000 });
@@ -489,7 +496,7 @@ export default function Home() {
           {page === "tables" && activeTab && <TabDetail tab={activeTab} products={filteredProducts} search={productSearch} setSearch={setProductSearch} tipEnabled={tipEnabled} setTipEnabled={toggleTip} onApplyCharges={() => activeTab && chargesMutation.mutate({ tabId: activeTab.id, tipPercent: tipEnabled ? 10 : 0 })} onBack={() => setSelectedTabId(null)} onName={() => { setCustomerNameInput(activeTab.customerName || ""); setCustomerNameOpen(true); }} onPrint={printTab} onAdd={(product: any) => addProduct(product)} onPrintBarista={(item: any) => activeTab && setBaristaPrintOrder({ tab: activeTab, item })} launchingProductIds={launchingProductIds} updatingItemId={updatingItemId} onQuantity={changeItemQuantity} onPayment={() => { setPaymentValue((activeTab.balanceCents / 100).toFixed(2)); setPaymentOpen(true); }} onTransfer={() => { setTransferDestination(null); setTransferOpen(true); }} onClose={() => activeTab.id < 0 ? toast.info("A comanda offline será encerrada após sincronizar") : requireAuth(() => closeMutation.mutate({ tabId: activeTab.id }))} canAdjustTotal={activeTab.id > 0 && hasFeatureAccess("adjustTabValue")} onAdjustTotal={(newTotalCents: number, reason: string) => requireAuth(() => adjustTabValueMutation.mutate({ tabId: activeTab.id, newTotalCents, reason }))} currentUserName={user?.name || "Operador"} loading={productsQuery.isLoading || setItemMutation.isPending || payMutation.isPending || closeMutation.isPending || chargesMutation.isPending || transferMutation.isPending || customerNameMutation.isPending || syncOfflineMutation.isPending || adjustTabValueMutation.isPending} />}
           {page === "customers" && <CustomersPage customers={customersQuery.data ?? []} onNew={() => setCustomerFormOpen(true)} onDelete={(id: number) => deleteCustomerMutation.mutate({ customerId: id })} />}
           {page === "products" && <ProductsPage products={products} onNewCategory={() => requireAuth(() => setCategoryOpen(true))} onNew={() => { setEditingProduct(null); setNewProduct({ name: "", code: "", categoryId: 1, unit: "un", cost: "", price: "", stock: "", minimum: "" }); setProductOpen(true); }} onEdit={(product: any) => { setEditingProduct(product); setNewProduct({ name: product.name, code: product.code, categoryId: product.categoryId ?? 1, unit: product.unit ?? "un", cost: String(product.costCents / 100), price: String(product.priceCents / 100), stock: String(product.stockQuantity), minimum: String(product.minimumStock) }); setProductOpen(true); }} onDelete={(id: number) => { if (window.confirm("Remover este produto? Esta ação não pode ser desfeita.")) deleteProductMutation.mutate({ productId: id }); }} onToggleActive={(id: number, active: boolean) => setProductActiveMutation.mutate({ productId: id, active })} />}
-          {page === "stock" && <StockPage products={products} movements={stockMovementsInput === null ? [] : stockMovementsQuery.data ?? []} movementsLoading={stockMovementsInput !== null && stockMovementsQuery.isLoading} movementsError={stockMovementsInput === null ? "Selecione um intervalo de datas válido." : stockMovementsQuery.error?.message} movementPeriod={stockMovementPeriod} onPeriodChange={setStockMovementPeriod} movementFrom={stockMovementFrom} onMovementFromChange={setStockMovementFrom} movementTo={stockMovementTo} onMovementToChange={setStockMovementTo} onRefreshMovements={() => void stockMovementsQuery.refetch()} onAdjust={(product) => { setStockProduct(product); setStockQty("1"); setStockSheet(true); }} />}
+          {page === "stock" && <StockPage products={products} movements={stockMovementsInput === null ? [] : stockMovementsQuery.data?.items ?? []} movementTotal={stockMovementsQuery.data?.total ?? 0} movementPage={stockMovementsPage} movementTotalPages={stockMovementsQuery.data?.totalPages ?? 0} onMovementPageChange={setStockMovementsPage} movementProduct={stockMovementProduct} onMovementProductChange={(productId) => { setStockMovementProduct(productId); setStockMovementsPage(1); }} movementsLoading={stockMovementsInput !== null && stockMovementsQuery.isFetching} movementsError={stockMovementsInput === null ? "Selecione um intervalo de datas válido." : stockMovementsQuery.error?.message} movementPeriod={stockMovementPeriod} onPeriodChange={(period) => { setStockMovementPeriod(period); setStockMovementsPage(1); }} movementFrom={stockMovementFrom} onMovementFromChange={(date) => { setStockMovementFrom(date); setStockMovementsPage(1); }} movementTo={stockMovementTo} onMovementToChange={(date) => { setStockMovementTo(date); setStockMovementsPage(1); }} onRefreshMovements={() => void stockMovementsQuery.refetch()} onAdjust={(product) => { setStockProduct(product); setStockQty("1"); setStockSheet(true); }} />}
           {page === "finance" && <FinancePage dashboard={dashboard} expenses={expensesQuery.data ?? [{ id: 1, description: "Reposição de bebidas", category: "Fornecedores", amountCents: 12450, method: "pix" as Method, occurredAt: new Date(), userName: "Rafael" }, { id: 2, description: "Conta de energia", category: "Energia", amountCents: 6800, method: "debit" as Method, occurredAt: new Date(Date.now() - 86400000), userName: "Rafael" }]} onNewExpense={() => requireAuth(() => setExpenseOpen(true))} />}
           {page === "reports" && <ReportsPage summary={reportSummaryQuery.data} from={historyFrom} to={historyTo} setFrom={setHistoryFrom} setTo={setHistoryTo} loading={reportSummaryQuery.isLoading} error={reportSummaryQuery.error?.message} onRefresh={() => void reportSummaryQuery.refetch()} />}
           {page === "users" && <UsersPage audits={auditQuery.data ?? []} users={accessQuery.data ?? []} rolePermissions={rolePermissions} savingRolePermissions={updateRolePermissionsMutation.isPending} onSaveRolePermissions={(input) => requireAuth(() => updateRolePermissionsMutation.mutate(input))} onUpdate={(input: any) => requireAuth(() => updateAccessMutation.mutate(input))} onCreate={() => setUserCreateOpen(true)} onDelete={(userId: number) => requireAuth(() => deleteUserMutation.mutate({ userId }))} />}
@@ -640,13 +647,19 @@ function ProductsPage({ products, onNew, onEdit, onDelete, onToggleActive, onNew
   return <div className="products-page"><section className="page-intro"><div><span className="section-kicker">CATÁLOGO</span><h2>Produtos do lounge.</h2><p>Cadastre e mantenha o catálogo usado nas comandas.</p></div><div className="toolbar-actions"><Button variant="outline" onClick={onNewCategory}><Plus size={17} /> Nova categoria</Button><Button onClick={onNew}><Plus size={17} /> Novo produto</Button></div></section><section className="panel inventory-panel"><div className="inventory-toolbar"><div className="search-field"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Pesquisar por nome, código ou categoria" /></div><Badge variant="outline">{filtered.length} produtos</Badge></div><div className="inventory-table"><div className="inventory-head"><span>Produto</span><span>Categoria</span><span>Preço</span><span>Status</span><span>Ações</span></div>{filtered.map((product) => <div className="inventory-row" key={product.id}><span><b>{product.name}</b><small>{product.code}</small></span><span><Badge variant="outline">{product.categoryName || "Sem categoria"}</Badge></span><span><b>{money(product.priceCents)}</b><small>custo {money(product.costCents)}</small></span><span><Badge variant={product.active ? "default" : "secondary"}>{product.active ? "Ativo" : "Inativo"}</Badge></span><span className="row-actions"><button onClick={() => onEdit(product)} aria-label="Editar produto"><Pencil size={16} /></button>{product.active ? <button onClick={() => onDelete(product.id)} aria-label="Desativar produto"><Trash2 size={16} /></button> : <button onClick={() => onToggleActive(product.id, true)} aria-label="Ativar produto" title="Ativar produto"><Plus size={16} /></button>}</span></div>)}</div></section></div>;
 }
 
-function StockPage({ products, movements, movementsLoading, movementsError, movementPeriod, onPeriodChange, movementFrom, onMovementFromChange, movementTo, onMovementToChange, onRefreshMovements, onAdjust }: {
+function StockPage({ products, movements, movementTotal, movementPage, movementTotalPages, onMovementPageChange, movementProduct, onMovementProductChange, movementsLoading, movementsError, movementPeriod, onPeriodChange, movementFrom, onMovementFromChange, movementTo, onMovementToChange, onRefreshMovements, onAdjust }: {
   products: any[];
   movements: any[];
+  movementTotal: number;
+  movementPage: number;
+  movementTotalPages: number;
+  onMovementPageChange: (page: number) => void;
+  movementProduct: string;
+  onMovementProductChange: (productId: string) => void;
   movementsLoading: boolean;
   movementsError?: string;
-  movementPeriod: "3" | "7" | "30" | "90" | "all" | "custom";
-  onPeriodChange: (period: "3" | "7" | "30" | "90" | "all" | "custom") => void;
+  movementPeriod: "2" | "3" | "7" | "30" | "90" | "all" | "custom";
+  onPeriodChange: (period: "2" | "3" | "7" | "30" | "90" | "all" | "custom") => void;
   movementFrom: string;
   onMovementFromChange: (date: string) => void;
   movementTo: string;
@@ -656,14 +669,11 @@ function StockPage({ products, movements, movementsLoading, movementsError, move
 }) {
   const [search, setSearch] = useState("");
   const [reportSearch, setReportSearch] = useState("");
-  const [movementProduct, setMovementProduct] = useState("all");
   const filtered = products.filter((product) => product.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const reportRows = products.filter((product) => `${product.name} ${product.code}`.toLocaleLowerCase().includes(reportSearch.toLocaleLowerCase()));
   const reportCostTotalCents = reportRows.reduce((total, product) => total + Number(product.stockQuantity ?? 0) * Number(product.costCents ?? 0), 0);
   const reportPriceTotalCents = reportRows.reduce((total, product) => total + Number(product.stockQuantity ?? 0) * Number(product.priceCents ?? 0), 0);
   const reportStockQuantity = reportRows.reduce((total, product) => total + Number(product.stockQuantity ?? 0), 0);
-  const movementProducts = Array.from(new Set(movements.map((movement) => movement.productName).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
-  const filteredMovements = movementProduct === "all" ? movements : movements.filter((movement) => movement.productName === movementProduct);
   const low = products.filter((product) => product.active && product.stockQuantity <= product.minimumStock);
 
   return <div className="stock-page">
@@ -683,16 +693,16 @@ function StockPage({ products, movements, movementsLoading, movementsError, move
       })}</tbody></table></div> : <p className="empty-inline stock-valuation-empty">{products.length ? "Nenhum produto corresponde à busca." : "Nenhum produto cadastrado."}</p>}
     </section>
     {low.length > 0 && <section className="low-stock-strip"><AlertTriangle size={20} /><div><b>Estoque baixo identificado</b><span>{low.map((item) => `${item.name} (${item.stockQuantity} un)`).join(" · ")}</span></div></section>}
-    <section className="panel inventory-panel"><div className="inventory-toolbar"><div className="search-field"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar no estoque" /></div></div><div className="inventory-table"><div className="inventory-head"><span>Produto</span><span>Categoria</span><span>Estoque</span><span>Preço de venda</span><span /></div>{filtered.map((product) => <div className="inventory-row" key={product.id}><span><b>{product.name}</b><small>{product.code}</small></span><span><Badge variant="outline">{product.categoryName || "Sem categoria"}</Badge></span><span><b className={product.stockQuantity <= product.minimumStock ? "danger" : ""}>{product.stockQuantity} un</b><small>mín. {product.minimumStock}</small></span><span><b>{money(product.priceCents)}</b><small>custo {money(product.costCents)}</small></span><button onClick={() => onAdjust(product)}>Ajustar</button></div>)}</div></section>
+    <section className="panel inventory-panel stock-products-panel"><div className="inventory-toolbar"><div className="search-field"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar no estoque" /></div></div><div className="stock-products-scroll"><div className="inventory-table"><div className="inventory-head"><span>Produto</span><span>Categoria</span><span>Estoque</span><span>Preço de venda</span><span /></div>{filtered.map((product) => <div className="inventory-row" key={product.id}><span><b>{product.name}</b><small>{product.code}</small></span><span><Badge variant="outline">{product.categoryName || "Sem categoria"}</Badge></span><span><b className={product.stockQuantity <= product.minimumStock ? "danger" : ""}>{product.stockQuantity} un</b><small>mín. {product.minimumStock}</small></span><span><b>{money(product.priceCents)}</b><small>custo {money(product.costCents)}</small></span><button onClick={() => onAdjust(product)}>Ajustar</button></div>)}</div></div></section>
     <section className="panel stock-movements-panel">
       <div className="stock-movements-heading">
-        <div><span className="section-kicker">RASTREABILIDADE DO ESTOQUE</span><h3>Registro de entradas e saídas</h3><p>Até 100 movimentações no período, incluindo vendas, ajustes e estornos.</p></div>
+        <div><span className="section-kicker">RASTREABILIDADE DO ESTOQUE</span><h3>Registro de entradas e saídas</h3><p>Histórico completo com paginação, filtrado pelo período e produto selecionados.</p></div>
         <div className="stock-movement-controls">
           <label className="stock-movement-filter">Período<select value={movementPeriod} onChange={(event) => onPeriodChange(event.target.value as typeof movementPeriod)}>
-            <option value="3">Últimos 3 dias</option><option value="7">Últimos 7 dias</option><option value="30">Últimos 30 dias</option><option value="90">Últimos 90 dias</option><option value="custom">Personalizado</option><option value="all">Todo o período</option>
+            <option value="2">Últimos 2 dias</option><option value="3">Últimos 3 dias</option><option value="7">Últimos 7 dias</option><option value="30">Últimos 30 dias</option><option value="90">Últimos 90 dias</option><option value="custom">Personalizado</option><option value="all">Todo o período</option>
           </select></label>
-          <label className="stock-movement-filter">Produto<select value={movementProduct} onChange={(event) => setMovementProduct(event.target.value)}>
-            <option value="all">Todos os produtos</option>{movementProducts.map((productName) => <option key={productName} value={productName}>{productName}</option>)}
+          <label className="stock-movement-filter">Produto<select value={movementProduct} onChange={(event) => onMovementProductChange(event.target.value)}>
+            <option value="all">Todos os produtos</option>{products.map((product) => <option key={product.id} value={String(product.id)}>{product.name}</option>)}
           </select></label>
           {movementPeriod === "custom" && <div className="stock-movement-date-range">
             <label className="stock-movement-filter">De<input type="date" value={movementFrom} max={movementTo || undefined} onChange={(event) => onMovementFromChange(event.target.value)} /></label>
@@ -701,10 +711,10 @@ function StockPage({ products, movements, movementsLoading, movementsError, move
           <button type="button" className="movement-refresh" onClick={onRefreshMovements} disabled={movementsLoading}>{movementsLoading ? "Carregando…" : "Atualizar"}</button>
         </div>
       </div>
-      {!movementsError && <p className="movement-result-count">{movementsLoading ? "Buscando registros do período…" : `${filteredMovements.length} ${filteredMovements.length === 1 ? "movimentação encontrada" : "movimentações encontradas"}`}</p>}
-      {movementsError ? <p className="movement-state movement-error">Não foi possível carregar as movimentações: {movementsError}</p> : movementsLoading && movements.length === 0 ? <p className="movement-state">Carregando movimentações…</p> : filteredMovements.length === 0 ? <p className="movement-state">{movementProduct === "all" ? "Nenhuma movimentação encontrada neste período." : "Nenhuma movimentação deste produto encontrada no período."}</p> : <div className="stock-movements-scroll"><div className="stock-movement-table">
+      {!movementsError && <p className="movement-result-count">{movementsLoading ? "Buscando registros do período…" : `${movementTotal} ${movementTotal === 1 ? "movimentação encontrada" : "movimentações encontradas"}`}</p>}
+      {movementsError ? <p className="movement-state movement-error">Não foi possível carregar as movimentações: {movementsError}</p> : movementsLoading && movements.length === 0 ? <p className="movement-state">Carregando movimentações…</p> : movementTotal === 0 ? <p className="movement-state">{movementProduct === "all" ? "Nenhuma movimentação encontrada neste período." : "Nenhuma movimentação deste produto encontrada no período."}</p> : <div className="stock-movements-scroll"><div className="stock-movement-table">
         <div className="stock-movement-head"><span>Tipo</span><span>Produto</span><span>Quantidade</span><span>Data e horário</span><span>Responsável</span><span>Motivo</span></div>
-        {filteredMovements.map((movement) => <div className="stock-movement-row" key={movement.id}>
+        {movements.map((movement) => <div className="stock-movement-row" key={movement.id}>
           <span><b className={`movement-direction ${movement.direction === "in" ? "movement-in" : "movement-out"}`}>{movement.direction === "in" ? "Entrada" : "Saída"}</b></span>
           <span className="movement-product">{movement.productName}</span>
           <span className={`movement-quantity ${movement.direction === "in" ? "movement-in-text" : "movement-out-text"}`}>{movement.direction === "in" ? "+" : "−"}{movement.quantity} {movement.unit || "un"}</span>
@@ -713,6 +723,7 @@ function StockPage({ products, movements, movementsLoading, movementsError, move
           <span className="movement-reason">{movement.reason}</span>
         </div>)}
       </div></div>}
+      {!movementsError && !movementsLoading && movementTotal > 0 && <div className="stock-movement-pagination"><span>Página {movementPage} de {Math.max(1, movementTotalPages)} · {movementTotal} registros no período</span><div><button type="button" onClick={() => onMovementPageChange(Math.max(1, movementPage - 1))} disabled={movementPage <= 1 || movementsLoading}>Anterior</button><button type="button" onClick={() => onMovementPageChange(Math.min(movementTotalPages, movementPage + 1))} disabled={movementPage >= movementTotalPages || movementsLoading}>Próxima</button></div></div>}
     </section>
   </div>;
 }
