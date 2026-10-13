@@ -655,13 +655,53 @@ function StockPage({ products, movements, movementsLoading, movementsError, move
   onAdjust: (product: any) => void;
 }) {
   const [search, setSearch] = useState("");
+  const [reportSearch, setReportSearch] = useState("");
   const [movementProduct, setMovementProduct] = useState("all");
   const filtered = products.filter((product) => product.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+  const reportRows = products.filter((product) => `${product.name} ${product.code} ${product.categoryName ?? ""}`.toLocaleLowerCase().includes(reportSearch.toLocaleLowerCase()));
+  const stockCostTotalCents = products.reduce((total, product) => total + Number(product.stockQuantity ?? 0) * Number(product.costCents ?? 0), 0);
+  const potentialSalesTotalCents = products.reduce((total, product) => total + Number(product.stockQuantity ?? 0) * Number(product.priceCents ?? 0), 0);
+  const stockedProductCount = products.filter((product) => Number(product.stockQuantity ?? 0) > 0).length;
   const movementProducts = Array.from(new Set(movements.map((movement) => movement.productName).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
   const filteredMovements = movementProduct === "all" ? movements : movements.filter((movement) => movement.productName === movementProduct);
-  const low = products.filter((product) => product.stockQuantity <= product.minimumStock);
+  const low = products.filter((product) => product.active && product.stockQuantity <= product.minimumStock);
+  const exportCurrentStock = () => {
+    const quote = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const rows = [
+      ["RELATÓRIO DO ESTOQUE ATUAL"],
+      ["Gerado em", new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date())],
+      ["Valor total pelo custo", money(stockCostTotalCents)],
+      ["Venda potencial pelo preço cadastrado", money(potentialSalesTotalCents)],
+      [],
+      ["Produto", "Código", "Categoria", "Quantidade atual", "Unidade", "Custo unitário", "Valor total pelo custo", "Preço de venda unitário", "Venda potencial", "Status"],
+      ...products.map((product) => {
+        const quantity = Number(product.stockQuantity ?? 0);
+        return [product.name, product.code, product.categoryName || "Sem categoria", String(quantity), product.unit || "un", money(Number(product.costCents ?? 0)), money(quantity * Number(product.costCents ?? 0)), money(Number(product.priceCents ?? 0)), money(quantity * Number(product.priceCents ?? 0)), product.active ? "Ativo" : "Inativo"];
+      }),
+    ];
+    const csv = "\uFEFF" + rows.map((row) => row.map(quote).join(";")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `estoque-atual-${saoPauloDateKey(new Date())}.csv`;
+    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+  };
   return <div className="stock-page">
-    <section className="stock-hero"><div><span className="section-kicker">INVENTÁRIO EM TEMPO REAL</span><h2>Controle o que mantém o lounge aceso.</h2><p>Baixas automáticas por comanda e ajustes auditáveis.</p></div><div className="stock-summary"><span><Package size={18} /><b>{products.length}</b> produtos ativos</span><span className="low"><AlertTriangle size={18} /><b>{low.length}</b> em alerta</span></div></section>
+    <section className="stock-hero"><div><span className="section-kicker">INVENTÁRIO EM TEMPO REAL</span><h2>Controle o que mantém o lounge aceso.</h2><p>Baixas automáticas por comanda e ajustes auditáveis.</p></div><div className="stock-summary"><span><Package size={18} /><b>{products.filter((product) => product.active).length}</b> produtos ativos</span><span className="low"><AlertTriangle size={18} /><b>{low.length}</b> em alerta</span></div></section>
+    <section className="panel stock-valuation-panel">
+      <div className="stock-valuation-heading"><div><span className="section-kicker">POSIÇÃO ATUAL</span><h3>Relatório de valor do estoque</h3><p>O custo total é quantidade em mãos × custo unitário. A venda potencial usa o preço cadastrado, sem descontar promoções; produtos inativos com saldo também entram no cálculo.</p></div><Button variant="outline" onClick={exportCurrentStock} disabled={!products.length}><Download size={16} /> Exportar CSV</Button></div>
+      <div className="stock-valuation-summary">
+        <article><span>Valor total pelo custo</span><strong>{money(stockCostTotalCents)}</strong><small>Valor investido nos produtos em estoque</small></article>
+        <article><span>Venda potencial</span><strong>{money(potentialSalesTotalCents)}</strong><small>Quantidade atual × preço de venda cadastrado</small></article>
+        <article><span>Produtos com saldo</span><strong>{stockedProductCount} <small>de {products.length}</small></strong><small>Itens com quantidade maior que zero</small></article>
+      </div>
+      <div className="stock-valuation-toolbar"><div className="search-field"><Search size={18} /><input value={reportSearch} onChange={(event) => setReportSearch(event.target.value)} placeholder="Buscar produto, código ou categoria" /></div><Badge variant="outline">{reportRows.length} de {products.length} produtos</Badge></div>
+      {reportRows.length ? <div className="stock-valuation-scroll"><table className="stock-valuation-table"><thead><tr><th>Produto</th><th>Quantidade</th><th>Custo unitário</th><th>Total pelo custo</th><th>Preço de venda</th><th>Venda potencial</th></tr></thead><tbody>{reportRows.map((product) => {
+        const quantity = Number(product.stockQuantity ?? 0);
+        return <tr key={product.id}><td><b>{product.name}</b><small>{product.code} · {product.categoryName || "Sem categoria"}{!product.active ? " · Inativo" : ""}</small></td><td>{quantity} {product.unit || "un"}</td><td>{money(Number(product.costCents ?? 0))}</td><td><b>{money(quantity * Number(product.costCents ?? 0))}</b></td><td>{money(Number(product.priceCents ?? 0))}</td><td><b>{money(quantity * Number(product.priceCents ?? 0))}</b></td></tr>;
+      })}</tbody></table></div> : <p className="empty-inline stock-valuation-empty">{products.length ? "Nenhum produto corresponde à busca." : "Nenhum produto cadastrado para calcular o estoque atual."}</p>}
+      {reportSearch && <p className="stock-valuation-note">Os totais do resumo consideram todos os produtos; a busca filtra somente as linhas da tabela.</p>}
+    </section>
     {low.length > 0 && <section className="low-stock-strip"><AlertTriangle size={20} /><div><b>Estoque baixo identificado</b><span>{low.map((item) => `${item.name} (${item.stockQuantity} un)`).join(" · ")}</span></div></section>}
     <section className="panel inventory-panel"><div className="inventory-toolbar"><div className="search-field"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar no estoque" /></div></div><div className="inventory-table"><div className="inventory-head"><span>Produto</span><span>Categoria</span><span>Estoque</span><span>Preço de venda</span><span /></div>{filtered.map((product) => <div className="inventory-row" key={product.id}><span><b>{product.name}</b><small>{product.code}</small></span><span><Badge variant="outline">{product.categoryName || "Sem categoria"}</Badge></span><span><b className={product.stockQuantity <= product.minimumStock ? "danger" : ""}>{product.stockQuantity} un</b><small>mín. {product.minimumStock}</small></span><span><b>{money(product.priceCents)}</b><small>custo {money(product.costCents)}</small></span><button onClick={() => onAdjust(product)}>Ajustar</button></div>)}</div></section>
     <section className="panel stock-movements-panel">
