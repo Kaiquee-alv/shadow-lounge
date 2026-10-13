@@ -1056,19 +1056,31 @@ export async function createExpense(input: { description: string; category: stri
   return { id };
 }
 
-export async function listExpenses() {
+export async function listExpenses(input: { from?: Date; to?: Date; page: number }) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
-  return db.select({
-    id: expenses.id,
-    description: expenses.description,
-    category: expenses.category,
-    amountCents: expenses.amountCents,
-    method: expenses.method,
-    notes: expenses.notes,
-    occurredAt: expenses.occurredAt,
-    userName: users.name,
-  }).from(expenses).leftJoin(users, eq(expenses.createdBy, users.id)).orderBy(desc(expenses.occurredAt)).limit(100);
+  const pageSize = 25;
+  const page = Math.max(1, Math.floor(input.page));
+  const where = and(
+    input.from ? gte(expenses.occurredAt, input.from) : undefined,
+    input.to ? lte(expenses.occurredAt, input.to) : undefined,
+  );
+  const [countRows, items] = await Promise.all([
+    db.select({ count: sql<number>`count(*)::int` }).from(expenses).where(where),
+    db.select({
+      id: expenses.id,
+      description: expenses.description,
+      category: expenses.category,
+      amountCents: expenses.amountCents,
+      method: expenses.method,
+      notes: expenses.notes,
+      occurredAt: expenses.occurredAt,
+      userName: users.name,
+    }).from(expenses).leftJoin(users, eq(expenses.createdBy, users.id)).where(where)
+      .orderBy(desc(expenses.occurredAt), desc(expenses.id)).limit(pageSize).offset((page - 1) * pageSize),
+  ]);
+  const total = Number(countRows[0]?.count ?? 0);
+  return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
 }
 
 export async function getDashboard(rangeDays = 30) {
@@ -1157,7 +1169,7 @@ export async function listProductHistory(productId?: number, from?: Date, to?: D
   return rows;
 }
 
-export async function getReportSummary(from?: Date, to?: Date) {
+export async function getReportSummary(from?: Date, to?: Date, includeFinanceDetails = true) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   const closedTabFilters = [eq(tabs.status, "closed"), from ? gte(tabs.closedAt, from) : undefined, to ? lte(tabs.closedAt, to) : undefined].filter(Boolean);
@@ -1166,17 +1178,21 @@ export async function getReportSummary(from?: Date, to?: Date) {
   const [closedTabs, expenseRows] = await Promise.all([
     db.select({ id: tabs.id, tabCode: tabs.tabCode, customerName: tabs.customerName, closedAt: tabs.closedAt, tipCents: tabs.tipCents, discountCents: tabs.discountCents, manualAdjustmentCents: tabs.manualAdjustmentCents, adjustmentReason: tabs.adjustmentReason, tableNumber: loungeTables.number })
       .from(tabs).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id)).where(and(...closedTabFilters)).orderBy(desc(tabs.closedAt)),
-    db.select({ amountCents: expenses.amountCents }).from(expenses).where(expenseFilters.length ? and(...expenseFilters) : undefined),
+    includeFinanceDetails
+      ? db.select({ amountCents: expenses.amountCents, category: expenses.category }).from(expenses).where(expenseFilters.length ? and(...expenseFilters) : undefined)
+      : Promise.resolve([]),
   ]);
   const tabIds = closedTabs.map((tab) => tab.id);
   const [salesPaymentRows, productRows, periodPaymentRows] = await Promise.all([
-    tabIds.length ? db.select({ tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method, createdAt: payments.createdAt })
+    includeFinanceDetails && tabIds.length ? db.select({ tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method, createdAt: payments.createdAt })
       .from(payments).where(inArray(payments.tabId, tabIds)).orderBy(asc(payments.createdAt)) : Promise.resolve([]),
     tabIds.length ? db.select({ id: tabItems.id, tabId: tabItems.tabId, productName: tabItems.productName, quantity: tabItems.quantity, unitPriceCents: tabItems.unitPriceCents, unitCostCents: tabItems.unitCostCents })
       .from(tabItems).where(inArray(tabItems.tabId, tabIds)).orderBy(asc(tabItems.id)) : Promise.resolve([]),
-    db.select({ tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method, createdAt: payments.createdAt, tabCode: tabs.tabCode, tabStatus: tabs.status, tableNumber: loungeTables.number })
-      .from(payments).innerJoin(tabs, eq(payments.tabId, tabs.id)).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id))
-      .where(paymentFilters.length ? and(...paymentFilters) : undefined).orderBy(desc(payments.createdAt)),
+    includeFinanceDetails
+      ? db.select({ tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method, createdAt: payments.createdAt, tabCode: tabs.tabCode, tabStatus: tabs.status, tableNumber: loungeTables.number })
+        .from(payments).innerJoin(tabs, eq(payments.tabId, tabs.id)).innerJoin(loungeTables, eq(tabs.tableId, loungeTables.id))
+        .where(paymentFilters.length ? and(...paymentFilters) : undefined).orderBy(desc(payments.createdAt))
+      : Promise.resolve([]),
   ]);
 
   const productsMap = new Map<string, { productName: string; quantity: number; totalCents: number }>();
@@ -1220,13 +1236,33 @@ export async function getReportSummary(from?: Date, to?: Date) {
   });
   const receivedCents = periodPaymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
   const expensesCents = expenseRows.reduce((sum, expense) => sum + expense.amountCents, 0);
+  const expenseCategoryTotals = new Map<string, number>();
+  for (const expense of expenseRows) expenseCategoryTotals.set(expense.category, (expenseCategoryTotals.get(expense.category) ?? 0) + expense.amountCents);
+  const expenseCategories = Array.from(expenseCategoryTotals, ([category, totalCents]) => ({ category, totalCents })).sort((a, b) => b.totalCents - a.totalCents);
   const financialTotals = calculateReportFinancialTotals(sales, productRows, expensesCents);
+  const common = {
+    salesCount: sales.length,
+    productUnits: productRows.reduce((sum, item) => sum + item.quantity, 0),
+    products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity),
+  };
+  if (!includeFinanceDetails) {
+    return {
+      ...common,
+      salesCents: financialTotals.salesCents,
+      tipCents: financialTotals.tipCents,
+      productSalesCents: financialTotals.productSalesCents,
+      sales: sales.map(({ receivedCents: _received, balanceCents: _balance, payments: _payments, ...sale }) => sale),
+    };
+  }
   return {
-    ...financialTotals, receivedCents, outstandingCents: sales.reduce((sum, tab) => sum + tab.balanceCents, 0),
-    salesCount: sales.length, productUnits: productRows.reduce((sum, item) => sum + item.quantity, 0),
+    ...financialTotals,
+    ...common,
+    receivedCents,
+    outstandingCents: sales.reduce((sum, tab) => sum + tab.balanceCents, 0),
     expensesCents,
+    expenseCategories,
     paymentMethods: Array.from(paymentMap.values()).sort((a, b) => b.totalCents - a.totalCents),
-    products: Array.from(productsMap.values()).sort((a, b) => b.quantity - a.quantity), sales,
+    sales,
     receipts: periodPaymentRows.map(({ tabId, amountCents, method, createdAt, tabCode, tabStatus, tableNumber }) => ({ tabId, amountCents, method, createdAt, tabCode, tabStatus, tableNumber })),
   };
 }

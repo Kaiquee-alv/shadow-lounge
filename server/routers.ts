@@ -269,9 +269,26 @@ export const appRouter = router({
     }),
   }),
   finance: router({
-    expenses: protectedProcedure.query(async ({ ctx }) => {
+    summary: protectedProcedure.input(z.object({ from: z.date().optional(), to: z.date().optional() }).refine(({ from, to }) => !from || !to || from <= to, { message: "A data inicial deve ser anterior ou igual à data final" }).optional()).query(async ({ ctx, input }) => {
       await requireFeature(ctx, "finance");
-      return listExpenses();
+      const summary = await getReportSummary(input?.from, input?.to, true);
+      if (!("receivedCents" in summary)) throw new Error("Resumo financeiro indisponível");
+      return {
+        receivedCents: summary.receivedCents,
+        outstandingCents: summary.outstandingCents,
+        costCents: summary.costCents,
+        expensesCents: summary.expensesCents,
+        resultCents: summary.resultCents,
+        paymentMethods: summary.paymentMethods,
+        expenseCategories: summary.expenseCategories,
+        receipts: summary.receipts,
+      };
+    }),
+    expenses: protectedProcedure.input(z.object({
+      from: z.date().optional(), to: z.date().optional(), page: z.number().int().min(1).default(1),
+    }).refine(({ from, to }) => !from || !to || from <= to, { message: "A data inicial deve ser anterior ou igual à data final" }).optional()).query(async ({ ctx, input }) => {
+      await requireFeature(ctx, "finance");
+      return listExpenses({ from: input?.from, to: input?.to, page: input?.page ?? 1 });
     }),
     createExpense: protectedProcedure.input(z.object({
       description: z.string().min(2).max(240), category: z.string().min(2).max(100), amountCents: z.number().int().positive(), method: paymentMethod, notes: z.string().max(2000).optional(), occurredAt: z.date(),
@@ -320,7 +337,7 @@ export const appRouter = router({
   reports: router({
     summary: protectedProcedure.input(z.object({ from: z.date().optional(), to: z.date().optional() }).refine(({ from, to }) => !from || !to || from <= to, { message: "A data inicial deve ser anterior ou igual à data final" }).optional()).query(async ({ ctx, input }) => {
       await requireFeature(ctx, "reports");
-      return getReportSummary(input?.from, input?.to);
+      return getReportSummary(input?.from, input?.to, false);
     }),
   }),
   pricing: router({
