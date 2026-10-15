@@ -432,7 +432,8 @@ h3 { font-size: 17px; font-weight: 700; }
 .report-payment-bars small { display: block; margin-top: 5px; color: var(--ink-muted); font-size: 10px; }
 .report-product-filter { padding: 0 20px 12px; }
 .report-product-filter .field-label { width: 100%; max-width: 420px; }
-.report-product-filter select { min-height: 40px; width: 100%; padding: 0 12px; color: var(--ink); border: 1px solid #d9e0e8; border-radius: 10px; background: #fff; }
+.report-product-filter input { min-height: 40px; width: 100%; padding: 0 12px; color: var(--ink); border: 1px solid #d9e0e8; border-radius: 10px; background: #fff; }
+.report-product-filter input:focus { outline: 2px solid rgba(194, 139, 50, .25); border-color: var(--gold-strong); }
 .report-product-summary { padding: 0 20px 10px; }
 .report-product-summary .report-product-row { grid-template-columns: 1fr auto; padding: 11px 0; gap: 12px; }
 .report-product-summary .report-product-row > span small { display: block; margin-top: 3px; color: var(--ink-muted); font-size: 10px; font-weight: 400; text-align: left; }

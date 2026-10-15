@@ -581,7 +581,7 @@ export async function openTab(tableId: number, userId: number, openedByName: str
     if (!table[0]) throw new Error("Mesa não encontrada");
     const existingOpenTab = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, tableId), eq(tabs.status, "open"))).limit(1);
     if (existingOpenTab[0]) throw new Error("Esta mesa já possui uma comanda aberta");
-    const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId }).returning({ id: tabs.id, openedAt: tabs.openedAt });
+    const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId, tipPercent: 10 }).returning({ id: tabs.id, openedAt: tabs.openedAt });
     const tabId = Number(inserted[0].id);
     const tabCode = `#${String(tabId).padStart(6, "0")}`;
     await tx.update(tabs).set({ tabCode }).where(eq(tabs.id, tabId));
@@ -602,7 +602,7 @@ export async function openTab(tableId: number, userId: number, openedByName: str
       openedByName,
       discountPercent: 0,
       discountCents: 0,
-      tipPercent: 0,
+      tipPercent: 10,
       tipCents: 0,
       manualAdjustmentCents: 0,
       adjustmentReason: null,

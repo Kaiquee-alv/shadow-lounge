@@ -63,7 +63,7 @@ export function saveOfflineTab(tab: OfflineTab) {
 export function removeOfflineTab(offlineKey: string) { saveOfflineTabs(getOfflineTabs().filter((tab) => tab.offlineKey !== offlineKey)); }
 export function createOfflineTab(table: { id: number; number: number }): OfflineTab {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  return { id: -Date.now(), offlineKey: `OFF-${suffix}`, deviceId: getDeviceId(), tableId: table.id, tableNumber: table.number, tabCode: `OFF-${suffix.slice(-8)}`, customerName: null, status: "open", tipPercent: 0, tipCents: 0, items: [], payments: [], createdAt: new Date().toISOString() };
+  return { id: -Date.now(), offlineKey: `OFF-${suffix}`, deviceId: getDeviceId(), tableId: table.id, tableNumber: table.number, tabCode: `OFF-${suffix.slice(-8)}`, customerName: null, status: "open", tipPercent: 10, tipCents: 0, items: [], payments: [], createdAt: new Date().toISOString() };
 }
 export function getDeviceId() {
   if (typeof window === "undefined") return "server";
