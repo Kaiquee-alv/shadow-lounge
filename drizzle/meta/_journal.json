@@ -15,6 +15,13 @@
       "when": 1791292065529,
       "tag": "0007_immutable_audit_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792348442979,
+      "tag": "0008_cash_sessions",
+      "breakpoints": true
     }
   ]
 }

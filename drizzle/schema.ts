@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   serial,
   integer,
@@ -166,6 +167,7 @@ export const tabs = pgTable(
     tableId: integer("tableId").notNull().references(() => loungeTables.id),
     tabCode: varchar("tabCode", { length: 24 }).notNull(),
     offlineKey: varchar("offlineKey", { length: 80 }),
+    offlineFingerprint: varchar("offlineFingerprint", { length: 64 }),
     customerName: varchar("customerName", { length: 120 }),
     customerId: integer("customerId").references(() => customers.id),
     status: tabStatusEnum("status").default("open").notNull(),
@@ -213,11 +215,53 @@ export const tabItems = pgTable(
   ],
 );
 
+export const cashSessions = pgTable(
+  "cash_sessions",
+  {
+    id: serial("id").primaryKey(),
+    status: varchar("status", { length: 20 }).$type<"open" | "closed">().default("open").notNull(),
+    openingFloatCents: integer("openingFloatCents").notNull(),
+    openedBy: integer("openedBy").notNull().references(() => users.id),
+    openedAt: timestamp("openedAt").defaultNow().notNull(),
+    closedBy: integer("closedBy").references(() => users.id),
+    closedAt: timestamp("closedAt"),
+    countedCashCents: integer("countedCashCents"),
+    expectedCashCents: integer("expectedCashCents"),
+    differenceCents: integer("differenceCents"),
+    closeNote: varchar("closeNote", { length: 500 }),
+  },
+  (table) => [
+    check("cash_sessions_status_check", sql`${table.status} IN ('open', 'closed')`),
+    check("cash_sessions_opening_nonnegative", sql`${table.openingFloatCents} >= 0`),
+    index("cash_sessions_opened_idx").on(table.openedAt),
+    uniqueIndex("cash_sessions_single_open_unique").on(table.status).where(sql`${table.status} = 'open'`),
+  ],
+);
+
+export const cashMovements = pgTable(
+  "cash_movements",
+  {
+    id: serial("id").primaryKey(),
+    sessionId: integer("sessionId").notNull().references(() => cashSessions.id),
+    kind: varchar("kind", { length: 20 }).$type<"supply" | "withdrawal" | "refund">().notNull(),
+    amountCents: integer("amountCents").notNull(),
+    description: varchar("description", { length: 240 }).notNull(),
+    createdBy: integer("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => [
+    check("cash_movements_kind_check", sql`${table.kind} IN ('supply', 'withdrawal', 'refund')`),
+    check("cash_movements_amount_positive", sql`${table.amountCents} > 0`),
+    index("cash_movements_session_created_idx").on(table.sessionId, table.createdAt),
+  ],
+);
+
 export const payments = pgTable(
   "payments",
   {
     id: serial("id").primaryKey(),
     tabId: integer("tabId").notNull().references(() => tabs.id),
+    cashSessionId: integer("cashSessionId").references(() => cashSessions.id),
     amountCents: integer("amountCents").notNull(),
     method: paymentMethodEnum("method").notNull(),
     requestKey: varchar("requestKey", { length: 80 }).notNull(),
@@ -228,6 +272,7 @@ export const payments = pgTable(
     uniqueIndex("payments_request_key_unique").on(table.requestKey),
     index("payments_tab_idx").on(table.tabId),
     index("payments_created_idx").on(table.createdAt),
+    index("payments_cash_session_idx").on(table.cashSessionId),
   ],
 );
 
@@ -255,12 +300,13 @@ export const expenses = pgTable(
     category: varchar("category", { length: 100 }).notNull(),
     amountCents: integer("amountCents").notNull(),
     method: paymentMethodEnum("method").default("pix").notNull(),
+    cashSessionId: integer("cashSessionId").references(() => cashSessions.id),
     notes: text("notes"),
     occurredAt: timestamp("occurredAt").defaultNow().notNull(),
     createdBy: integer("createdBy").notNull().references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (table) => [index("expenses_occurred_idx").on(table.occurredAt)],
+  (table) => [index("expenses_occurred_idx").on(table.occurredAt), index("expenses_cash_session_idx").on(table.cashSessionId)],
 );
 
 export const settings = pgTable("settings", {
@@ -273,8 +319,8 @@ export const settings = pgTable("settings", {
   happyHourStart: varchar("happyHourStart", { length: 5 }).default("17:00").notNull(),
   happyHourEnd: varchar("happyHourEnd", { length: 5 }).default("19:00").notNull(),
   happyHourDiscountPercent: integer("happyHourDiscountPercent").default(10).notNull(),
-  rolePermissions: jsonb("rolePermissions").$type<{ manager: string[]; attendant: string[] }>().notNull().default(sql`'{"manager":["dashboard","tables","adjustTabValue","customers","products","stock","finance","reports","settings"],"attendant":["tables","customers","reports"]}'::jsonb`),
-  rolePermissionsVersion: integer("rolePermissionsVersion").default(2).notNull(),
+  rolePermissions: jsonb("rolePermissions").$type<{ manager: string[]; attendant: string[] }>().notNull().default(sql`'{"manager":["dashboard","tables","adjustTabValue","customers","products","stock","finance","cash","reports","settings"],"attendant":["tables","customers","cash","reports"]}'::jsonb`),
+  rolePermissionsVersion: integer("rolePermissionsVersion").default(3).notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
 });
 

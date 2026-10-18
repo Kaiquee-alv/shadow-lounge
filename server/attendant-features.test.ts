@@ -10,6 +10,15 @@ const mocks = vi.hoisted(() => ({
   adjustTabValue: vi.fn(),
   listStockMovements: vi.fn(),
   listExpenses: vi.fn(),
+  getCurrentCashSession: vi.fn(),
+  listCashSessions: vi.fn(),
+  getCashSessionDetails: vi.fn(),
+  openCashSession: vi.fn(),
+  addCashMovement: vi.fn(),
+  closeCashSession: vi.fn(),
+  registerPayment: vi.fn(),
+  syncOfflineTab: vi.fn(),
+  createExpense: vi.fn(),
 }));
 
 vi.mock("./db.js", async (importOriginal) => {
@@ -25,6 +34,15 @@ vi.mock("./db.js", async (importOriginal) => {
     adjustTabValue: mocks.adjustTabValue,
     listStockMovements: mocks.listStockMovements,
     listExpenses: mocks.listExpenses,
+    getCurrentCashSession: mocks.getCurrentCashSession,
+    listCashSessions: mocks.listCashSessions,
+    getCashSessionDetails: mocks.getCashSessionDetails,
+    openCashSession: mocks.openCashSession,
+    addCashMovement: mocks.addCashMovement,
+    closeCashSession: mocks.closeCashSession,
+    registerPayment: mocks.registerPayment,
+    syncOfflineTab: mocks.syncOfflineTab,
+    createExpense: mocks.createExpense,
   };
 });
 
@@ -49,6 +67,15 @@ describe("permissões de atendente para clientes e relatórios", () => {
     mocks.adjustTabValue.mockResolvedValue({ success: true });
     mocks.listStockMovements.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 25, totalPages: 0 });
     mocks.listExpenses.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 25, totalPages: 0 });
+    mocks.getCurrentCashSession.mockResolvedValue(null);
+    mocks.listCashSessions.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20, totalPages: 0 });
+    mocks.getCashSessionDetails.mockResolvedValue({ id: 15 });
+    mocks.openCashSession.mockResolvedValue({ id: 15 });
+    mocks.addCashMovement.mockResolvedValue({ id: 16 });
+    mocks.closeCashSession.mockResolvedValue({ id: 15, differenceCents: 0 });
+    mocks.registerPayment.mockResolvedValue({ paymentId: 42, duplicate: false });
+    mocks.syncOfflineTab.mockResolvedValue({ tabId: 43, tabCode: "#000043", duplicate: false });
+    mocks.createExpense.mockResolvedValue({ id: 44 });
   });
 
   it("permite listar e cadastrar clientes mantendo a validação de CPF", async () => {
@@ -71,6 +98,16 @@ describe("permissões de atendente para clientes e relatórios", () => {
     mocks.getRolePermissions.mockResolvedValue({ ...DEFAULT_ROLE_PERMISSIONS, attendant: [] });
     await expect(caller.customers.list()).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(mocks.listCustomers).not.toHaveBeenCalled();
+  });
+
+  it("exige a permissão Caixa para criar uma despesa em dinheiro pelo Financeiro", async () => {
+    mocks.getRolePermissions.mockResolvedValue({
+      ...DEFAULT_ROLE_PERMISSIONS,
+      attendant: [...DEFAULT_ROLE_PERMISSIONS.attendant.filter((feature) => feature !== "cash"), "finance"],
+    });
+    const expense = { description: "Compra de gelo", category: "Fornecedores", amountCents: 1800, method: "cash" as const, occurredAt: new Date("2026-10-18T18:00:00.000Z") };
+    await expect(caller.finance.createExpense(expense)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.createExpense).not.toHaveBeenCalled();
   });
 
   it("só permite alterar o total da comanda quando a permissão específica está concedida", async () => {
@@ -128,5 +165,60 @@ describe("permissões de atendente para clientes e relatórios", () => {
     const result = await caller.customers.delete({ customerId: 23 });
     expect(result).toEqual({ success: true });
     expect(mocks.deleteCustomer).toHaveBeenCalledWith(23, 52);
+  });
+
+  it("permite consultar e operar o caixa quando o perfil recebeu essa funcionalidade", async () => {
+    const move = { kind: "supply" as const, amountCents: 2500, description: "Reforço de troco" };
+    const close = { sessionId: 15, countedCashCents: 12_500, note: "Conferido" };
+    const payment = { tabId: 20, amountCents: 1000, method: "cash" as const, requestKey: "payment-key-123" };
+    const offlineSync = {
+      offlineKey: "offline-key-123",
+      deviceId: "device-123",
+      tableId: 2,
+      tipPercent: 0 as const,
+      items: [],
+      payments: [{ amountCents: 500, method: "cash" as const, requestKey: "offline-payment-123" }],
+    };
+    mocks.listCashSessions.mockResolvedValueOnce({ items: [], total: 40, page: 2, pageSize: 20, totalPages: 2 });
+    await expect(caller.cash.current()).resolves.toBeNull();
+    await expect(caller.cash.history({ page: 2 })).resolves.toEqual({ items: [], total: 40, page: 2, pageSize: 20, totalPages: 2 });
+    await expect(caller.cash.details({ sessionId: 15 })).resolves.toEqual({ id: 15 });
+    await expect(caller.cash.open({ openingFloatCents: 10_000 })).resolves.toEqual({ id: 15 });
+    await expect(caller.cash.addMovement(move)).resolves.toEqual({ id: 16 });
+    await expect(caller.cash.close(close)).resolves.toEqual({ id: 15, differenceCents: 0 });
+    expect(mocks.openCashSession).toHaveBeenCalledWith(10_000, 52);
+    expect(mocks.addCashMovement).toHaveBeenCalledWith(move, 52);
+    expect(mocks.closeCashSession).toHaveBeenCalledWith(close, 52);
+    const expense = { description: "Compra de gelo", category: "Fornecedores", amountCents: 1800, notes: "Reposição" };
+    await expect(caller.cash.addExpense(expense)).resolves.toEqual({ id: 44 });
+    expect(mocks.createExpense).toHaveBeenCalledWith({ ...expense, method: "cash", occurredAt: expect.any(Date) }, 52);
+    await expect(caller.lounge.pay(payment)).resolves.toEqual({ paymentId: 42, duplicate: false });
+    await expect(caller.lounge.syncOfflineTab(offlineSync)).resolves.toEqual({ tabId: 43, tabCode: "#000043", duplicate: false });
+    expect(mocks.registerPayment).toHaveBeenCalledWith(payment, 52);
+    expect(mocks.syncOfflineTab).toHaveBeenCalledWith(offlineSync, 52);
+  });
+
+  it("bloqueia a API do caixa quando o administrador remove a funcionalidade do perfil", async () => {
+    mocks.getRolePermissions.mockResolvedValue({
+      ...DEFAULT_ROLE_PERMISSIONS,
+      attendant: DEFAULT_ROLE_PERMISSIONS.attendant.filter((feature) => feature !== "cash"),
+    });
+    await expect(caller.cash.current()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.cash.open({ openingFloatCents: 0 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.cash.addExpense({ description: "Compra de gelo", category: "Fornecedores", amountCents: 1800 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.lounge.pay({ tabId: 20, amountCents: 1000, method: "cash", requestKey: "payment-key-123" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.lounge.syncOfflineTab({
+      offlineKey: "offline-key-123",
+      deviceId: "device-123",
+      tableId: 2,
+      tipPercent: 0,
+      items: [],
+      payments: [{ amountCents: 500, method: "cash", requestKey: "offline-payment-123" }],
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.getCurrentCashSession).not.toHaveBeenCalled();
+    expect(mocks.openCashSession).not.toHaveBeenCalled();
+    expect(mocks.createExpense).not.toHaveBeenCalled();
+    expect(mocks.registerPayment).not.toHaveBeenCalled();
+    expect(mocks.syncOfflineTab).not.toHaveBeenCalled();
   });
 });

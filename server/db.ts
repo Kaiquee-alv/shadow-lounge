@@ -4,6 +4,8 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
   auditLogs,
+  cashMovements,
+  cashSessions,
   customers,
   expenses,
   localCredentials,
@@ -26,6 +28,8 @@ import { isValidCpf, normalizeCpf } from "@shared/cpf";
 import { auditRoleLabel } from "@shared/audit-labels";
 import { ACCESS_FEATURES, DEFAULT_ROLE_PERMISSIONS, type AccessFeature, type RolePermissions } from "@shared/role-permissions";
 import { calculateReportFinancialTotals } from "./report-financial-utils.js";
+import { calculateCashDifferenceCents, calculateCashSessionTotals, isCashOutflowAllowed, type CashMovementKind } from "./cash-register-utils.js";
+import { createOfflineTabFingerprint, offlineFingerprintMatches, paymentRequestMatches } from "./payment-idempotency-utils.js";
 import { priceRuleAppliesAt, saoPauloClock, timeInWindow, weekdaysFromMask, weekdaysToMask } from "./price-rule-utils.js";
 import { planTabTotalAdjustment } from "./tab-adjustment-utils.js";
 import { buildDailyRevenue } from "./daily-revenue-utils.js";
@@ -112,11 +116,25 @@ async function initializeInitialData() {
   await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "customers_cpf_unique" ON "customers" ("cpf")`);
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "customerId" integer REFERENCES "customers"("id")`);
   await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineKey" varchar(80)`);
+  await db.execute(sql`ALTER TABLE "tabs" ADD COLUMN IF NOT EXISTS "offlineFingerprint" varchar(64)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "tabs_offline_key_unique" ON "tabs" USING btree ("offlineKey")`);
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "maxTables" integer NOT NULL DEFAULT 20`);
-  await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "rolePermissions" jsonb NOT NULL DEFAULT '{"manager":["dashboard","tables","adjustTabValue","customers","products","stock","finance","reports","settings"],"attendant":["tables","customers","reports"]}'::jsonb`);
+  await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "rolePermissions" jsonb NOT NULL DEFAULT '{"manager":["dashboard","tables","adjustTabValue","customers","products","stock","finance","cash","reports","settings"],"attendant":["tables","customers","cash","reports"]}'::jsonb`);
   // Concede aos gerentes a mesma capacidade que já tinham antes de a alteração de comanda virar permissão independente.
   await db.execute(sql`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS "rolePermissionsVersion" integer NOT NULL DEFAULT 1`);
   await db.execute(sql`UPDATE "settings" SET "rolePermissions" = jsonb_set("rolePermissions", '{manager}', COALESCE("rolePermissions"->'manager', '[]'::jsonb) || '["adjustTabValue"]'::jsonb, true), "rolePermissionsVersion" = 2 WHERE "rolePermissionsVersion" < 2`);
+  await db.execute(sql`UPDATE "settings" SET "rolePermissions" = jsonb_set(jsonb_set("rolePermissions", '{manager}', COALESCE("rolePermissions"->'manager', '[]'::jsonb) || '["cash"]'::jsonb, true), '{attendant}', COALESCE("rolePermissions"->'attendant', '[]'::jsonb) || '["cash"]'::jsonb, true), "rolePermissionsVersion" = 3 WHERE "rolePermissionsVersion" < 3`);
+  await db.execute(sql`ALTER TABLE "settings" ALTER COLUMN "rolePermissionsVersion" SET DEFAULT 3`);
+  await db.execute(sql`ALTER TABLE "settings" ALTER COLUMN "rolePermissions" SET DEFAULT '{"manager":["dashboard","tables","adjustTabValue","customers","products","stock","finance","cash","reports","settings"],"attendant":["tables","customers","cash","reports"]}'::jsonb`);
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "cash_sessions" ("id" serial PRIMARY KEY, "status" varchar(20) NOT NULL DEFAULT 'open' CHECK ("status" IN ('open', 'closed')), "openingFloatCents" integer NOT NULL CHECK ("openingFloatCents" >= 0), "openedBy" integer NOT NULL REFERENCES "users"("id"), "openedAt" timestamp NOT NULL DEFAULT now(), "closedBy" integer REFERENCES "users"("id"), "closedAt" timestamp, "countedCashCents" integer, "expectedCashCents" integer, "differenceCents" integer, "closeNote" varchar(500))`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "cash_sessions_single_open_unique" ON "cash_sessions" ("status") WHERE "status" = 'open'`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "cash_sessions_opened_idx" ON "cash_sessions" ("openedAt")`);
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "cash_movements" ("id" serial PRIMARY KEY, "sessionId" integer NOT NULL REFERENCES "cash_sessions"("id"), "kind" varchar(20) NOT NULL CHECK ("kind" IN ('supply', 'withdrawal', 'refund')), "amountCents" integer NOT NULL CHECK ("amountCents" > 0), "description" varchar(240) NOT NULL, "createdBy" integer NOT NULL REFERENCES "users"("id"), "createdAt" timestamp NOT NULL DEFAULT now())`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "cash_movements_session_created_idx" ON "cash_movements" ("sessionId", "createdAt")`);
+  await db.execute(sql`ALTER TABLE "payments" ADD COLUMN IF NOT EXISTS "cashSessionId" integer REFERENCES "cash_sessions"("id")`);
+  await db.execute(sql`ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "cashSessionId" integer REFERENCES "cash_sessions"("id")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "payments_cash_session_idx" ON "payments" ("cashSessionId")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "expenses_cash_session_idx" ON "expenses" ("cashSessionId")`);
   // Regras criadas antes dos dias da semana continuam valendo todos os dias.
   await db.execute(sql`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "daysOfWeek" integer[] NOT NULL DEFAULT ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`);
   await db.execute(sql`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "weekdaysMask" integer NOT NULL DEFAULT 127`);
@@ -169,7 +187,7 @@ async function initializeInitialData() {
   await db.insert(productCategories).values(categoriesSeed.map((name) => ({ name }))).onConflictDoUpdate({ target: productCategories.name,
     set: { active: true },
   });
-  await db.insert(settings).values({ id: 1, preventNegativeStock: true, maxTables: 20, rolePermissions: DEFAULT_ROLE_PERMISSIONS, rolePermissionsVersion: 2 }).onConflictDoNothing({ target: settings.id });
+  await db.insert(settings).values({ id: 1, preventNegativeStock: true, maxTables: 20, rolePermissions: DEFAULT_ROLE_PERMISSIONS, rolePermissionsVersion: 3 }).onConflictDoNothing({ target: settings.id });
 
 
 }
@@ -626,17 +644,33 @@ export async function syncOfflineTab(input: {
   items: Array<{ productId: number; productName: string; quantity: number; note?: string | null; createdAt?: string }>;
   payments: Array<{ amountCents: number; method: "pix" | "cash" | "debit" | "credit" | "other"; requestKey: string }>;
 }, userId: number) {
+  await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
+  const fingerprint = createOfflineTabFingerprint(input);
+  if (new Set(input.payments.map((payment) => payment.requestKey)).size !== input.payments.length) throw new Error("A sincronização contém chaves de pagamento repetidas");
   return db.transaction(async (tx) => {
-    const existing = await tx.select({ id: tabs.id, tabCode: tabs.tabCode }).from(tabs).where(eq(tabs.offlineKey, input.offlineKey)).limit(1);
-    if (existing[0]) return { tabId: existing[0].id, tabCode: existing[0].tabCode, duplicate: true };
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.offlineKey}, 0))`);
+    const existing = await tx.select({ id: tabs.id, tabCode: tabs.tabCode, offlineFingerprint: tabs.offlineFingerprint }).from(tabs).where(eq(tabs.offlineKey, input.offlineKey)).limit(1);
+    if (existing[0]) {
+      if (!offlineFingerprintMatches(existing[0].offlineFingerprint, fingerprint)) {
+        if (!existing[0].offlineFingerprint) throw new Error("Há uma comanda antiga com esta chave offline, mas sem dados suficientes para validar a repetição. Confira o histórico antes de descartar a fila local.");
+        throw new Error("Esta chave offline já foi usada com dados diferentes");
+      }
+      return { tabId: existing[0].id, tabCode: existing[0].tabCode, duplicate: true };
+    }
     await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${input.tableId} FOR UPDATE`);
     const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, input.tableId)).limit(1);
     if (!table[0]) throw new Error("Mesa não encontrada");
     const open = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, input.tableId), eq(tabs.status, "open"))).limit(1);
     if (open[0]) throw new Error(`A mesa ${table[0].number} já possui uma comanda aberta`);
-    const inserted = await tx.insert(tabs).values({ tableId: input.tableId, tabCode: `OFFLINE-${Date.now()}`, offlineKey: input.offlineKey, customerName: input.customerName?.trim() || null, openedBy: userId }).returning({ id: tabs.id });
+    let cashSessionId: number | null = null;
+    if (input.payments.length > 0) {
+      const activeCash = await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
+      if (!activeCash[0]) throw new Error("Abra o caixa antes de sincronizar pagamentos offline");
+      cashSessionId = Number(activeCash[0].id);
+    }
+    const inserted = await tx.insert(tabs).values({ tableId: input.tableId, tabCode: `OFFLINE-${Date.now()}`, offlineKey: input.offlineKey, offlineFingerprint: fingerprint, customerName: input.customerName?.trim() || null, openedBy: userId }).returning({ id: tabs.id });
     const tabId = Number(inserted[0].id);
     const tabCode = `#${String(tabId).padStart(6, "0")}`;
     await tx.update(tabs).set({ tabCode }).where(eq(tabs.id, tabId));
@@ -660,9 +694,9 @@ export async function syncOfflineTab(input: {
     for (const payment of input.payments) {
       if (payment.amountCents <= 0) throw new Error("Pagamento offline inválido");
       const duplicatePayment = await tx.select({ id: payments.id }).from(payments).where(eq(payments.requestKey, payment.requestKey)).limit(1);
-      if (duplicatePayment[0]) continue;
+      if (duplicatePayment[0]) throw new Error("Esta chave de pagamento já foi usada em outra sincronização");
       if (paidCents + payment.amountCents > subtotalCents + tipCents) throw new Error("Os pagamentos superam o total da comanda");
-      await tx.insert(payments).values({ tabId, amountCents: payment.amountCents, method: payment.method, requestKey: payment.requestKey, receivedBy: userId });
+      await tx.insert(payments).values({ tabId, cashSessionId, amountCents: payment.amountCents, method: payment.method, requestKey: payment.requestKey, receivedBy: userId });
       paidCents += payment.amountCents;
     }
     await tx.update(loungeTables).set({ activeTabId: tabId, status: paidCents === subtotalCents + tipCents ? "occupied" : paidCents > 0 ? "partial" : "occupied", updatedAt: new Date() }).where(eq(loungeTables.id, input.tableId));
@@ -878,11 +912,22 @@ export async function adjustTabValue(input: { tabId: number; newTotalCents: numb
 }
 
 export async function registerPayment(input: { tabId: number; amountCents: number; method: "pix" | "cash" | "debit" | "credit" | "other"; requestKey: string }, userId: number) {
+  await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    const previous = await tx.select().from(payments).where(eq(payments.requestKey, input.requestKey)).limit(1);
-    if (previous[0]) return { paymentId: previous[0].id, duplicate: true };
+    const returnDuplicateOrRejectMismatch = (existing: { id: number; tabId: number; amountCents: number; method: string }) => {
+      if (!paymentRequestMatches(existing, input)) {
+        throw new Error("Esta chave de pagamento já foi usada com dados diferentes");
+      }
+      return { paymentId: existing.id, duplicate: true as const };
+    };
+    const previous = await tx.select({ id: payments.id, tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method }).from(payments).where(eq(payments.requestKey, input.requestKey)).limit(1);
+    if (previous[0]) return returnDuplicateOrRejectMismatch(previous[0]);
+    const activeCash = await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
+    if (!activeCash[0]) throw new Error("Abra o caixa antes de registrar recebimentos");
+    const duplicateAfterLock = await tx.select({ id: payments.id, tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method }).from(payments).where(eq(payments.requestKey, input.requestKey)).limit(1);
+    if (duplicateAfterLock[0]) return returnDuplicateOrRejectMismatch(duplicateAfterLock[0]);
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
@@ -891,7 +936,7 @@ export async function registerPayment(input: { tabId: number; amountCents: numbe
     const balance = tabTotals(itemRows, tab[0]).totalCents - paymentRows.reduce((sum, payment) => sum + payment.amountCents, 0);
     if (input.amountCents <= 0) throw new Error("Informe um valor de pagamento válido");
     if (input.amountCents > balance) throw new Error("O pagamento não pode superar o saldo pendente");
-    const inserted = await tx.insert(payments).values({ ...input, receivedBy: userId }).returning({ id: payments.id });
+    const inserted = await tx.insert(payments).values({ ...input, cashSessionId: Number(activeCash[0].id), receivedBy: userId }).returning({ id: payments.id });
     const paymentId = Number(inserted[0].id);
     const newBalance = balance - input.amountCents;
     await tx.update(loungeTables).set({ status: newBalance > 0 ? "partial" : "occupied" }).where(eq(loungeTables.id, tab[0].tableId));
@@ -1048,12 +1093,21 @@ export async function listStockMovements(input: { from?: Date; to?: Date; produc
 }
 
 export async function createExpense(input: { description: string; category: string; amountCents: number; method: "pix" | "cash" | "debit" | "credit" | "other"; notes?: string; occurredAt: Date }, userId: number) {
+  await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
-  const inserted = await db.insert(expenses).values({ ...input, notes: input.notes || null, createdBy: userId }).returning({ id: expenses.id });
-  const id = Number(inserted[0].id);
-  await writeAudit(userId, "CREATE_EXPENSE", "expense", id, `Registrou despesa: ${input.description}`);
-  return { id };
+  return db.transaction(async (tx) => {
+    const activeCash = await tx.select().from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
+    if (input.method === "cash" && !activeCash[0]) throw new Error("Abra o caixa antes de registrar uma despesa em dinheiro");
+    if (input.method === "cash" && activeCash[0]) {
+      const summary = await getCashSessionReport(tx, activeCash[0]);
+      if (!isCashOutflowAllowed(input.amountCents, summary.expectedCashCents)) throw new Error("A despesa supera o dinheiro esperado disponível no caixa");
+    }
+    const inserted = await tx.insert(expenses).values({ ...input, notes: input.notes || null, createdBy: userId, cashSessionId: activeCash[0]?.id ?? null }).returning({ id: expenses.id });
+    const id = Number(inserted[0].id);
+    await tx.insert(auditLogs).values({ userId, action: "CREATE_EXPENSE", entityType: "expense", entityId: id, description: `Registrou despesa: ${input.description}${input.method === "cash" ? " paga em dinheiro e vinculada ao caixa" : ""}` });
+    return { id };
+  });
 }
 
 export async function listExpenses(input: { from?: Date; to?: Date; page: number }) {
@@ -1081,6 +1135,182 @@ export async function listExpenses(input: { from?: Date; to?: Date; page: number
   ]);
   const total = Number(countRows[0]?.count ?? 0);
   return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
+}
+
+async function getCashSessionReport(executor: any, session: any) {
+  const [paymentRows, movementRows, expenseRows, openedByRows] = await Promise.all([
+    executor.select({
+      id: payments.id,
+      amountCents: payments.amountCents,
+      method: payments.method,
+      createdAt: payments.createdAt,
+      tabCode: tabs.tabCode,
+      tableNumber: loungeTables.number,
+      receivedByName: users.name,
+    }).from(payments)
+      .leftJoin(tabs, eq(payments.tabId, tabs.id))
+      .leftJoin(loungeTables, eq(tabs.tableId, loungeTables.id))
+      .leftJoin(users, eq(payments.receivedBy, users.id))
+      .where(eq(payments.cashSessionId, session.id))
+      .orderBy(desc(payments.createdAt), desc(payments.id)),
+    executor.select({
+      id: cashMovements.id,
+      kind: cashMovements.kind,
+      amountCents: cashMovements.amountCents,
+      description: cashMovements.description,
+      createdAt: cashMovements.createdAt,
+      userName: users.name,
+    }).from(cashMovements)
+      .leftJoin(users, eq(cashMovements.createdBy, users.id))
+      .where(eq(cashMovements.sessionId, session.id))
+      .orderBy(desc(cashMovements.createdAt), desc(cashMovements.id)),
+    executor.select({
+      id: expenses.id,
+      description: expenses.description,
+      category: expenses.category,
+      amountCents: expenses.amountCents,
+      method: expenses.method,
+      occurredAt: expenses.occurredAt,
+      createdAt: expenses.createdAt,
+      userName: users.name,
+    }).from(expenses)
+      .leftJoin(users, eq(expenses.createdBy, users.id))
+      .where(eq(expenses.cashSessionId, session.id))
+      .orderBy(desc(expenses.createdAt), desc(expenses.id)),
+    executor.select({ name: users.name }).from(users).where(eq(users.id, session.openedBy)).limit(1),
+  ]);
+  const closedByRows = session.closedBy
+    ? await executor.select({ name: users.name }).from(users).where(eq(users.id, session.closedBy)).limit(1)
+    : [];
+  const totals = calculateCashSessionTotals({
+    openingFloatCents: Number(session.openingFloatCents),
+    payments: paymentRows,
+    movements: movementRows,
+    expenses: expenseRows,
+  });
+  return {
+    ...session,
+    openedByName: openedByRows[0]?.name || "Operador",
+    closedByName: closedByRows[0]?.name || null,
+    ...totals,
+    expectedCashCents: session.status === "closed" && session.expectedCashCents !== null ? session.expectedCashCents : totals.expectedCashCents,
+    countedCashCents: session.countedCashCents ?? null,
+    differenceCents: session.status === "closed" ? session.differenceCents : null,
+    payments: paymentRows,
+    movements: movementRows,
+    expenses: expenseRows,
+  };
+}
+
+export async function getCurrentCashSession() {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const rows = await db.select().from(cashSessions).where(eq(cashSessions.status, "open")).orderBy(desc(cashSessions.id)).limit(1);
+  return rows[0] ? getCashSessionReport(db, rows[0]) : null;
+}
+
+export async function getCashSessionDetails(sessionId: number) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const rows = await db.select().from(cashSessions).where(eq(cashSessions.id, sessionId)).limit(1);
+  if (!rows[0]) throw new Error("Sessão de caixa não encontrada");
+  return getCashSessionReport(db, rows[0]);
+}
+
+export async function listCashSessions(input: { page: number }) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const pageSize = 20;
+  const page = Math.max(1, Math.floor(input.page));
+  const [countRows, items] = await Promise.all([
+    db.select({ count: sql<number>`count(*)::int` }).from(cashSessions).where(eq(cashSessions.status, "closed")),
+    db.select({
+      id: cashSessions.id,
+      status: cashSessions.status,
+      openingFloatCents: cashSessions.openingFloatCents,
+      openedBy: cashSessions.openedBy,
+      openedByName: sql<string>`COALESCE((SELECT name FROM users WHERE id = ${cashSessions.openedBy}), 'Operador')`,
+      openedAt: cashSessions.openedAt,
+      closedBy: cashSessions.closedBy,
+      closedByName: sql<string | null>`(SELECT name FROM users WHERE id = ${cashSessions.closedBy})`,
+      closedAt: cashSessions.closedAt,
+      expectedCashCents: cashSessions.expectedCashCents,
+      countedCashCents: cashSessions.countedCashCents,
+      differenceCents: cashSessions.differenceCents,
+      closeNote: cashSessions.closeNote,
+    }).from(cashSessions)
+      .where(eq(cashSessions.status, "closed"))
+      .orderBy(desc(cashSessions.openedAt), desc(cashSessions.id))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
+  ]);
+  const total = Number(countRows[0]?.count ?? 0);
+  return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
+}
+
+export async function openCashSession(openingFloatCents: number, userId: number) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  try {
+    return await db.transaction(async (tx) => {
+      const existing = await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
+      if (existing[0]) throw new Error("Já existe um caixa aberto. Feche a sessão atual antes de abrir outra.");
+      const inserted = await tx.insert(cashSessions).values({ openingFloatCents, openedBy: userId, status: "open" }).returning({ id: cashSessions.id });
+      const id = Number(inserted[0].id);
+      await tx.insert(auditLogs).values({ userId, action: "OPEN_CASH_SESSION", entityType: "cash_session", entityId: id, description: `Abriu caixa com fundo inicial de R$ ${(openingFloatCents / 100).toFixed(2)}` });
+      return { id };
+    });
+  } catch (error) {
+    const databaseError = error as { code?: string; cause?: { code?: string } };
+    if (databaseError.code === "23505" || databaseError.cause?.code === "23505") throw new Error("Já existe um caixa aberto. Feche a sessão atual antes de abrir outra.");
+    throw error;
+  }
+}
+
+export async function addCashMovement(input: { kind: CashMovementKind; amountCents: number; description: string }, userId: number) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  return db.transaction(async (tx) => {
+    const active = await tx.select().from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
+    if (!active[0]) throw new Error("Abra o caixa antes de registrar movimentações");
+    const isOutflow = input.kind !== "supply";
+    const summary = isOutflow ? await getCashSessionReport(tx, active[0]) : null;
+    if (summary && !isCashOutflowAllowed(input.amountCents, summary.expectedCashCents)) throw new Error("A saída supera o dinheiro esperado disponível no caixa");
+    const inserted = await tx.insert(cashMovements).values({ ...input, description: input.description.trim(), sessionId: active[0].id, createdBy: userId }).returning({ id: cashMovements.id });
+    const action = input.kind === "supply" ? "CASH_SUPPLY" : input.kind === "refund" ? "CASH_REFUND" : "CASH_WITHDRAWAL";
+    const label = input.kind === "supply" ? "suprimento" : input.kind === "refund" ? "devolução em dinheiro" : "sangria";
+    await tx.insert(auditLogs).values({ userId, action, entityType: "cash_movement", entityId: Number(inserted[0].id), description: `Registrou ${label} de R$ ${(input.amountCents / 100).toFixed(2)}: ${input.description.trim()}` });
+    return { id: Number(inserted[0].id) };
+  });
+}
+
+export async function closeCashSession(input: { sessionId: number; countedCashCents: number; note?: string }, userId: number) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  return db.transaction(async (tx) => {
+    const active = await tx.select().from(cashSessions).where(and(eq(cashSessions.id, input.sessionId), eq(cashSessions.status, "open"))).for("update").limit(1);
+    if (!active[0]) throw new Error("Esta sessão não está aberta");
+    const summary = await getCashSessionReport(tx, active[0]);
+    const differenceCents = calculateCashDifferenceCents(input.countedCashCents, summary.expectedCashCents);
+    const closedAt = new Date();
+    await tx.update(cashSessions).set({
+      status: "closed",
+      closedBy: userId,
+      closedAt,
+      countedCashCents: input.countedCashCents,
+      expectedCashCents: summary.expectedCashCents,
+      differenceCents,
+      closeNote: input.note?.trim() || null,
+    }).where(eq(cashSessions.id, input.sessionId));
+    await tx.insert(auditLogs).values({ userId, action: "CLOSE_CASH_SESSION", entityType: "cash_session", entityId: input.sessionId, description: `Fechou caixa: esperado R$ ${(summary.expectedCashCents / 100).toFixed(2)}, contado R$ ${(input.countedCashCents / 100).toFixed(2)}, diferença R$ ${(differenceCents / 100).toFixed(2)}` });
+    return { id: input.sessionId, expectedCashCents: summary.expectedCashCents, countedCashCents: input.countedCashCents, differenceCents, closedAt };
+  });
 }
 
 export async function getDashboard(rangeDays = 30) {
@@ -1407,9 +1637,9 @@ export async function updateRolePermissions(input: RolePermissions, userId: numb
     manager: Array.from(new Set(input.manager.filter((feature) => validFeatures.has(feature)))),
     attendant: Array.from(new Set(input.attendant.filter((feature) => validFeatures.has(feature)))),
   };
-  await db.insert(settings).values({ id: 1, rolePermissions: normalized, rolePermissionsVersion: 2 }).onConflictDoUpdate({
+  await db.insert(settings).values({ id: 1, rolePermissions: normalized, rolePermissionsVersion: 3 }).onConflictDoUpdate({
     target: settings.id,
-    set: { rolePermissions: normalized, rolePermissionsVersion: 2, updatedAt: new Date() },
+    set: { rolePermissions: normalized, rolePermissionsVersion: 3, updatedAt: new Date() },
   });
   await writeAudit(userId, "UPDATE_ROLE_PERMISSIONS", "settings", 1, "Atualizou as permissões dos perfis Gerente e Atendente");
   return normalized;

@@ -6,6 +6,7 @@ export const ACCESS_FEATURES = [
   { id: "products", label: "Produtos", description: "Catálogo, categorias, preços e cadastro de produtos" },
   { id: "stock", label: "Estoque", description: "Consultar movimentos e ajustar entradas e saídas" },
   { id: "finance", label: "Financeiro", description: "Consultar e registrar despesas" },
+  { id: "cash", label: "Caixa", description: "Abrir e fechar turnos, conferir recebimentos e registrar movimentos de dinheiro" },
   { id: "reports", label: "Relatórios", description: "Consultar relatórios de vendas e recebimentos" },
   { id: "settings", label: "Configurações", description: "Regras comerciais e parâmetros da operação" },
 ] as const;
@@ -18,7 +19,7 @@ export type RolePermissions = {
 
 export const DEFAULT_ROLE_PERMISSIONS: RolePermissions = {
   manager: ACCESS_FEATURES.map(({ id }) => id),
-  attendant: ["tables", "customers", "reports"],
+  attendant: ["tables", "customers", "cash", "reports"],
 };
 
 export function canAccessFeature(

@@ -8,12 +8,16 @@ import { systemRouter } from "./_core/systemRouter.js";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc.js";
 import {
   addTabItem,
+  addCashMovement,
   adjustStock,
   adjustTabValue,
   closeTab,
+  closeCashSession,
   createExpense,
   ensureInitialData,
   getDashboard,
+  getCurrentCashSession,
+  getCashSessionDetails,
   getReportSummary,
   getLocalRole,
   getTabDetails,
@@ -22,6 +26,7 @@ import {
   listUserAccess,
   registerLocally,
   listCategories,
+  listCashSessions,
   loginLocally,
   listAudit,
   listExpenses,
@@ -29,6 +34,7 @@ import {
   listStockMovements,
   listTables,
   openTab,
+  openCashSession,
   syncOfflineTab,
   registerPayment,
   saveProduct,
@@ -177,6 +183,7 @@ export const appRouter = router({
       payments: z.array(z.object({ amountCents: z.number().int().positive(), method: paymentMethod, requestKey: z.string().min(8).max(80) })).max(20),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
+      if (input.payments.length > 0) await requireFeature(ctx, "cash");
       return syncOfflineTab(input, ctx.user.id);
     }),
     transferTab: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), destinationTableId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
@@ -199,6 +206,7 @@ export const appRouter = router({
       tabId: z.number().int().positive(), amountCents: z.number().int().positive(), method: paymentMethod, requestKey: z.string().min(8).max(80),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
+      await requireFeature(ctx, "cash");
       return registerPayment(input, ctx.user.id);
     }),
     closeTab: protectedProcedure.input(z.object({ tabId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
@@ -294,7 +302,51 @@ export const appRouter = router({
       description: z.string().min(2).max(240), category: z.string().min(2).max(100), amountCents: z.number().int().positive(), method: paymentMethod, notes: z.string().max(2000).optional(), occurredAt: z.date(),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "finance");
+      if (input.method === "cash") await requireFeature(ctx, "cash");
       return createExpense(input, ctx.user.id);
+    }),
+  }),
+  cash: router({
+    current: protectedProcedure.query(async ({ ctx }) => {
+      await requireFeature(ctx, "cash");
+      return getCurrentCashSession();
+    }),
+    history: protectedProcedure.input(z.object({ page: z.number().int().min(1).default(1) })).query(async ({ ctx, input }) => {
+      await requireFeature(ctx, "cash");
+      return listCashSessions({ page: input.page });
+    }),
+    details: protectedProcedure.input(z.object({ sessionId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      await requireFeature(ctx, "cash");
+      return getCashSessionDetails(input.sessionId);
+    }),
+    open: protectedProcedure.input(z.object({ openingFloatCents: z.number().int().min(0).max(100_000_000) })).mutation(async ({ ctx, input }) => {
+      await requireFeature(ctx, "cash");
+      return openCashSession(input.openingFloatCents, ctx.user.id);
+    }),
+    addMovement: protectedProcedure.input(z.object({
+      kind: z.enum(["supply", "withdrawal", "refund"]),
+      amountCents: z.number().int().positive().max(100_000_000),
+      description: z.string().trim().min(2).max(240),
+    })).mutation(async ({ ctx, input }) => {
+      await requireFeature(ctx, "cash");
+      return addCashMovement(input, ctx.user.id);
+    }),
+    addExpense: protectedProcedure.input(z.object({
+      description: z.string().trim().min(2).max(240),
+      category: z.string().trim().min(2).max(100),
+      amountCents: z.number().int().positive().max(100_000_000),
+      notes: z.string().max(2000).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      await requireFeature(ctx, "cash");
+      return createExpense({ ...input, method: "cash", occurredAt: new Date() }, ctx.user.id);
+    }),
+    close: protectedProcedure.input(z.object({
+      sessionId: z.number().int().positive(),
+      countedCashCents: z.number().int().min(0).max(100_000_000),
+      note: z.string().trim().max(500).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      await requireFeature(ctx, "cash");
+      return closeCashSession(input, ctx.user.id);
     }),
   }),
   audit: router({
