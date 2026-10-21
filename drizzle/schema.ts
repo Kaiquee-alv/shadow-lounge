@@ -13,6 +13,7 @@ import {
   uniqueIndex,
   varchar,
 } from "drizzle-orm/pg-core";
+import type { PrintJobPayload } from "../shared/print-jobs.js";
 
 
 const userRoleEnum = pgEnum("user_role", ["user", "admin"]);
@@ -235,6 +236,34 @@ export const cashSessions = pgTable(
     check("cash_sessions_opening_nonnegative", sql`${table.openingFloatCents} >= 0`),
     index("cash_sessions_opened_idx").on(table.openedAt),
     uniqueIndex("cash_sessions_single_open_unique").on(table.status).where(sql`${table.status} = 'open'`),
+  ],
+);
+
+export const printJobs = pgTable(
+  "print_jobs",
+  {
+    id: serial("id").primaryKey(),
+    requestKey: varchar("requestKey", { length: 36 }).notNull(),
+    fingerprint: varchar("fingerprint", { length: 64 }).notNull(),
+    kind: varchar("kind", { length: 16 }).$type<"tab" | "barista">().notNull(),
+    payload: jsonb("payload").$type<PrintJobPayload>().notNull(),
+    status: varchar("status", { length: 16 }).$type<"pending" | "leased" | "printed">().default("pending").notNull(),
+    createdBy: integer("createdBy").notNull().references(() => users.id),
+    claimedBy: integer("claimedBy").references(() => users.id),
+    stationId: varchar("stationId", { length: 80 }),
+    claimTokenHash: varchar("claimTokenHash", { length: 64 }),
+    leaseExpiresAt: timestamp("leaseExpiresAt"),
+    attempts: integer("attempts").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    printedAt: timestamp("printedAt"),
+  },
+  (table) => [
+    check("print_jobs_kind_check", sql`${table.kind} IN ('tab', 'barista')`),
+    check("print_jobs_status_check", sql`${table.status} IN ('pending', 'leased', 'printed')`),
+    check("print_jobs_attempts_nonnegative", sql`${table.attempts} >= 0`),
+    uniqueIndex("print_jobs_request_key_unique").on(table.requestKey),
+    index("print_jobs_queue_idx").on(table.status, table.createdAt, table.id),
+    index("print_jobs_station_idx").on(table.claimedBy, table.stationId, table.status),
   ],
 );
 
