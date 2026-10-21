@@ -1,5 +1,5 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
-import { and, asc, desc, eq, gt, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
@@ -12,7 +12,6 @@ import {
   localSessions,
   loungeTables,
   payments,
-  printJobs,
   productCategories,
   productPriceRules,
   products,
@@ -24,7 +23,6 @@ import {
   type InsertUser,
   users,
 } from "../drizzle/schema.js";
-import { type EnqueuePrintJobInput, type PrintJobPayload } from "../shared/print-jobs.js";
 import { ENV } from "./_core/env.js";
 import { isValidCpf, normalizeCpf } from "@shared/cpf";
 import { auditRoleLabel } from "@shared/audit-labels";
@@ -137,10 +135,6 @@ async function initializeInitialData() {
   await db.execute(sql`ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "cashSessionId" integer REFERENCES "cash_sessions"("id")`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "payments_cash_session_idx" ON "payments" ("cashSessionId")`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "expenses_cash_session_idx" ON "expenses" ("cashSessionId")`);
-  await db.execute(sql`CREATE TABLE IF NOT EXISTS "print_jobs" ("id" serial PRIMARY KEY, "requestKey" varchar(36) NOT NULL, "fingerprint" varchar(64) NOT NULL, "kind" varchar(16) NOT NULL CHECK ("kind" IN ('tab', 'barista')), "payload" jsonb NOT NULL, "status" varchar(16) NOT NULL DEFAULT 'pending' CHECK ("status" IN ('pending', 'leased', 'printed')), "createdBy" integer NOT NULL REFERENCES "users"("id"), "claimedBy" integer REFERENCES "users"("id"), "stationId" varchar(80), "claimTokenHash" varchar(64), "leaseExpiresAt" timestamp, "attempts" integer NOT NULL DEFAULT 0 CHECK ("attempts" >= 0), "createdAt" timestamp NOT NULL DEFAULT now(), "printedAt" timestamp)`);
-  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "print_jobs_request_key_unique" ON "print_jobs" ("requestKey")`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS "print_jobs_queue_idx" ON "print_jobs" ("status", "createdAt", "id")`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS "print_jobs_station_idx" ON "print_jobs" ("claimedBy", "stationId", "status")`);
   // Regras criadas antes dos dias da semana continuam valendo todos os dias.
   await db.execute(sql`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "daysOfWeek" integer[] NOT NULL DEFAULT ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`);
   await db.execute(sql`ALTER TABLE "product_price_rules" ADD COLUMN IF NOT EXISTS "weekdaysMask" integer NOT NULL DEFAULT 127`);
@@ -223,12 +217,6 @@ export async function writeAudit(userId: number, action: string, entityType: str
 
 function asNumber(value: unknown) {
   return Number(value ?? 0);
-}
-
-async function requireOpenCashSession(tx: any) {
-  const active = await tx.select().from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
-  if (!active[0]) throw new Error("Abra o caixa antes de realizar operações financeiras");
-  return active[0];
 }
 
 function hashPassword(password: string, salt = randomBytes(16).toString("hex")) {
@@ -538,196 +526,6 @@ export async function getTabDetails(tabId: number) {
   return { ...tab[0], items, payments: paymentRows, launchHistory, ...totals, paidCents, balanceCents: Math.max(totalCents - paidCents, 0) };
 }
 
-function printTokenHash(token: string) {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-function matchesPrintToken(storedHash: string | null, token: string) {
-  if (!storedHash) return false;
-  const stored = Buffer.from(storedHash, "hex");
-  const supplied = Buffer.from(printTokenHash(token), "hex");
-  return stored.length === supplied.length && timingSafeEqual(stored, supplied);
-}
-
-export async function enqueuePrintJob(input: EnqueuePrintJobInput, userId: number) {
-  const db = await getDb();
-  if (!db) throw new Error("Banco de dados indisponível");
-  await ensureInitialData();
-
-  const tab = await getTabDetails(input.tabId);
-  const iso = (value: Date | string) => new Date(value).toISOString();
-  const payload: PrintJobPayload = input.kind === "tab"
-    ? {
-        kind: "tab",
-        tabCode: tab.tabCode,
-        tableNumber: tab.tableNumber,
-        customerName: tab.customerName,
-        openedByName: tab.openedByName,
-        openedAt: iso(tab.openedAt),
-        items: tab.items.map((item) => ({
-          productName: item.productName,
-          quantity: item.quantity,
-          unitPriceCents: item.unitPriceCents,
-          note: item.note,
-          discountReason: item.discountReason,
-          addedByName: item.addedByName,
-          createdAt: iso(item.createdAt),
-        })),
-        subtotalCents: tab.subtotalCents,
-        tipCents: tab.tipCents,
-        totalCents: tab.totalCents,
-        paidCents: tab.paidCents,
-        balanceCents: tab.balanceCents,
-        payments: tab.payments.map((payment) => ({
-          amountCents: payment.amountCents,
-          method: payment.method,
-          createdAt: iso(payment.createdAt),
-          receivedByName: payment.receivedByName,
-        })),
-      }
-    : (() => {
-        const item = tab.items.find((entry) => entry.id === input.itemId);
-        if (!item) throw new Error("O item não pertence a esta comanda ou já foi removido");
-        return {
-          kind: "barista" as const,
-          tabCode: tab.tabCode,
-          tableNumber: tab.tableNumber,
-          openedAt: iso(item.createdAt),
-          operatorName: item.addedByName,
-          productName: item.productName,
-          quantity: item.quantity,
-          note: item.note,
-          unitPriceCents: item.unitPriceCents,
-          discountReason: item.discountReason,
-        };
-      })();
-
-  const fingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${input.requestKey}))`);
-    const existing = await tx.select().from(printJobs).where(eq(printJobs.requestKey, input.requestKey)).limit(1).for("update");
-    if (existing[0]) {
-      if (existing[0].fingerprint !== fingerprint) throw new Error("Esta chave de impressão já foi usada com outro conteúdo");
-      return { jobId: existing[0].id, status: existing[0].status, duplicate: true };
-    }
-    const inserted = await tx.insert(printJobs).values({
-      requestKey: input.requestKey,
-      fingerprint,
-      kind: input.kind,
-      payload,
-      createdBy: userId,
-    }).returning({ id: printJobs.id, status: printJobs.status });
-    const job = inserted[0]!;
-    await tx.insert(auditLogs).values({
-      userId,
-      action: "PRINT_ENQUEUED",
-      entityType: "print_job",
-      entityId: job.id,
-      description: `Enviou ${input.kind === "tab" ? "comanda" : "pedido de preparo"} ${tab.tabCode} para a estação de impressão`,
-    });
-    return { jobId: job.id, status: job.status, duplicate: false };
-  });
-}
-
-export async function claimNextPrintJob(userId: number, stationId: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Banco de dados indisponível");
-  await ensureInitialData();
-  const now = new Date();
-  const leaseExpiresAt = new Date(now.getTime() + 10 * 60 * 1000);
-  const claimToken = randomBytes(32).toString("hex");
-  const claimTokenHash = printTokenHash(claimToken);
-
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${stationId}))`);
-    const current = await tx.select().from(printJobs).where(and(
-      eq(printJobs.status, "leased"),
-      eq(printJobs.claimedBy, userId),
-      eq(printJobs.stationId, stationId),
-      gt(printJobs.leaseExpiresAt, now),
-    )).orderBy(asc(printJobs.id)).limit(1).for("update");
-    const candidate = current[0] ?? (await tx.select().from(printJobs).where(or(
-      eq(printJobs.status, "pending"),
-      and(eq(printJobs.status, "leased"), lte(printJobs.leaseExpiresAt, now)),
-    )).orderBy(asc(printJobs.createdAt), asc(printJobs.id)).limit(1).for("update", { skipLocked: true }))[0];
-    if (!candidate) return null;
-
-    await tx.update(printJobs).set({
-      status: "leased",
-      claimedBy: userId,
-      stationId,
-      claimTokenHash,
-      leaseExpiresAt,
-      attempts: candidate.attempts + (current[0] ? 0 : 1),
-    }).where(eq(printJobs.id, candidate.id));
-    if (!current[0]) {
-      await tx.insert(auditLogs).values({
-        userId,
-        action: "PRINT_CLAIMED",
-        entityType: "print_job",
-        entityId: candidate.id,
-        description: `Reservou ${candidate.kind === "tab" ? "comanda" : "pedido de preparo"} ${candidate.payload.tabCode} na estação de impressão`,
-      });
-    }
-    return {
-      id: candidate.id,
-      kind: candidate.kind,
-      payload: candidate.payload,
-      createdAt: candidate.createdAt,
-      attempts: candidate.attempts + (current[0] ? 0 : 1),
-      claimToken,
-    };
-  });
-}
-
-export async function completePrintJob(jobId: number, userId: number, stationId: string, claimToken: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Banco de dados indisponível");
-  await ensureInitialData();
-  return db.transaction(async (tx) => {
-    const rows = await tx.select().from(printJobs).where(eq(printJobs.id, jobId)).limit(1).for("update");
-    const job = rows[0];
-    if (!job) throw new Error("Trabalho de impressão não encontrado");
-    if (job.status === "printed") return { success: true, duplicate: true };
-    if (job.status !== "leased" || job.claimedBy !== userId || job.stationId !== stationId || !matchesPrintToken(job.claimTokenHash, claimToken)) {
-      throw new Error("A reserva da impressão expirou ou pertence a outra estação. Atualize a estação e tente novamente.");
-    }
-    const printedAt = new Date();
-    await tx.update(printJobs).set({ status: "printed", printedAt, claimedBy: null, stationId: null, claimTokenHash: null, leaseExpiresAt: null }).where(eq(printJobs.id, jobId));
-    await tx.insert(auditLogs).values({
-      userId,
-      action: "PRINT_COMPLETED",
-      entityType: "print_job",
-      entityId: job.id,
-      description: `Confirmou impressão de ${job.kind === "tab" ? "comanda" : "pedido de preparo"} ${job.payload.tabCode}`,
-    });
-    return { success: true, duplicate: false };
-  });
-}
-
-export async function releasePrintJob(jobId: number, userId: number, stationId: string, claimToken: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Banco de dados indisponível");
-  await ensureInitialData();
-  return db.transaction(async (tx) => {
-    const rows = await tx.select().from(printJobs).where(eq(printJobs.id, jobId)).limit(1).for("update");
-    const job = rows[0];
-    if (!job) throw new Error("Trabalho de impressão não encontrado");
-    if (job.status !== "leased" || job.claimedBy !== userId || job.stationId !== stationId || !matchesPrintToken(job.claimTokenHash, claimToken)) {
-      throw new Error("A reserva da impressão expirou ou pertence a outra estação. Atualize a estação e tente novamente.");
-    }
-    await tx.update(printJobs).set({ status: "pending", claimedBy: null, stationId: null, claimTokenHash: null, leaseExpiresAt: null }).where(eq(printJobs.id, jobId));
-    await tx.insert(auditLogs).values({
-      userId,
-      action: "PRINT_RELEASED",
-      entityType: "print_job",
-      entityId: job.id,
-      description: `Devolveu ${job.kind === "tab" ? "comanda" : "pedido de preparo"} ${job.payload.tabCode} à fila de impressão`,
-    });
-    return { success: true };
-  });
-}
-
 export async function setTabCustomerName(tabId: number, customerName: string | null, userId: number) {
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
@@ -801,9 +599,7 @@ export async function openTab(tableId: number, userId: number, openedByName: str
     if (!table[0]) throw new Error("Mesa não encontrada");
     const existingOpenTab = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, tableId), eq(tabs.status, "open"))).limit(1);
     if (existingOpenTab[0]) throw new Error("Esta mesa já possui uma comanda aberta");
-    const activeCash = await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
-    const defaultTipPercent = activeCash[0] ? 10 : 0;
-    const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId, tipPercent: defaultTipPercent }).returning({ id: tabs.id, openedAt: tabs.openedAt });
+    const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId, tipPercent: 10 }).returning({ id: tabs.id, openedAt: tabs.openedAt });
     const tabId = Number(inserted[0].id);
     const tabCode = `#${String(tabId).padStart(6, "0")}`;
     await tx.update(tabs).set({ tabCode }).where(eq(tabs.id, tabId));
@@ -824,7 +620,7 @@ export async function openTab(tableId: number, userId: number, openedByName: str
       openedByName,
       discountPercent: 0,
       discountCents: 0,
-      tipPercent: defaultTipPercent,
+      tipPercent: 10,
       tipCents: 0,
       manualAdjustmentCents: 0,
       adjustmentReason: null,
@@ -863,17 +659,17 @@ export async function syncOfflineTab(input: {
       }
       return { tabId: existing[0].id, tabCode: existing[0].tabCode, duplicate: true };
     }
-    const hasFinancialActivity = input.items.length > 0 || input.payments.length > 0;
-    const activeCash = hasFinancialActivity
-      ? await requireOpenCashSession(tx)
-      : (await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1))[0] ?? null;
-    const tipPercent = activeCash ? input.tipPercent : 0;
     await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${input.tableId} FOR UPDATE`);
     const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, input.tableId)).limit(1);
     if (!table[0]) throw new Error("Mesa não encontrada");
     const open = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, input.tableId), eq(tabs.status, "open"))).limit(1);
     if (open[0]) throw new Error(`A mesa ${table[0].number} já possui uma comanda aberta`);
-    const cashSessionId: number | null = activeCash ? Number(activeCash.id) : null;
+    let cashSessionId: number | null = null;
+    if (input.payments.length > 0) {
+      const activeCash = await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
+      if (!activeCash[0]) throw new Error("Abra o caixa antes de sincronizar pagamentos offline");
+      cashSessionId = Number(activeCash[0].id);
+    }
     const inserted = await tx.insert(tabs).values({ tableId: input.tableId, tabCode: `OFFLINE-${Date.now()}`, offlineKey: input.offlineKey, offlineFingerprint: fingerprint, customerName: input.customerName?.trim() || null, openedBy: userId }).returning({ id: tabs.id });
     const tabId = Number(inserted[0].id);
     const tabCode = `#${String(tabId).padStart(6, "0")}`;
@@ -892,8 +688,8 @@ export async function syncOfflineTab(input: {
       await tx.insert(auditLogs).values({ userId, action: "ADD_ITEM", entityType: "tab", entityId: tabId, description: `Adicionou ${item.quantity}x ${product[0].name} à comanda ${tabCode} (sincronização offline)` });
       subtotalCents += item.quantity * product[0].priceCents;
     }
-    const tipCents = Math.round(subtotalCents * tipPercent / 100);
-    await tx.update(tabs).set({ tipPercent, tipCents }).where(eq(tabs.id, tabId));
+    const tipCents = Math.round(subtotalCents * input.tipPercent / 100);
+    await tx.update(tabs).set({ tipPercent: input.tipPercent, tipCents }).where(eq(tabs.id, tabId));
     let paidCents = 0;
     for (const payment of input.payments) {
       if (payment.amountCents <= 0) throw new Error("Pagamento offline inválido");
@@ -941,7 +737,6 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    await requireOpenCashSession(tx);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).for("update").limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
     const product = await tx.select().from(products).where(eq(products.id, input.productId)).for("update").limit(1);
@@ -1020,7 +815,6 @@ export async function setTabItemQuantity(input: { itemId: number; quantity: numb
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    await requireOpenCashSession(tx);
     const item = await tx.select().from(tabItems).where(eq(tabItems.id, input.itemId)).limit(1);
     if (!item[0]) throw new Error("Item não encontrado");
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${item[0].tabId} FOR UPDATE`);
@@ -1067,7 +861,6 @@ export async function setTabCharges(input: { tabId: number; tipPercent: 0 | 10 }
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    await requireOpenCashSession(tx);
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
@@ -1086,7 +879,6 @@ export async function adjustTabValue(input: { tabId: number; newTotalCents: numb
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    await requireOpenCashSession(tx);
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
@@ -1133,7 +925,7 @@ export async function registerPayment(input: { tabId: number; amountCents: numbe
     const previous = await tx.select({ id: payments.id, tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method }).from(payments).where(eq(payments.requestKey, input.requestKey)).limit(1);
     if (previous[0]) return returnDuplicateOrRejectMismatch(previous[0]);
     const activeCash = await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
-    if (!activeCash[0]) throw new Error("Abra o caixa antes de realizar operações financeiras");
+    if (!activeCash[0]) throw new Error("Abra o caixa antes de registrar recebimentos");
     const duplicateAfterLock = await tx.select({ id: payments.id, tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method }).from(payments).where(eq(payments.requestKey, input.requestKey)).limit(1);
     if (duplicateAfterLock[0]) return returnDuplicateOrRejectMismatch(duplicateAfterLock[0]);
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
@@ -1305,12 +1097,13 @@ export async function createExpense(input: { description: string; category: stri
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    const activeCash = await requireOpenCashSession(tx);
-    if (input.method === "cash") {
-      const summary = await getCashSessionReport(tx, activeCash);
+    const activeCash = await tx.select().from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
+    if (input.method === "cash" && !activeCash[0]) throw new Error("Abra o caixa antes de registrar uma despesa em dinheiro");
+    if (input.method === "cash" && activeCash[0]) {
+      const summary = await getCashSessionReport(tx, activeCash[0]);
       if (!isCashOutflowAllowed(input.amountCents, summary.expectedCashCents)) throw new Error("A despesa supera o dinheiro esperado disponível no caixa");
     }
-    const inserted = await tx.insert(expenses).values({ ...input, notes: input.notes || null, createdBy: userId, cashSessionId: activeCash.id }).returning({ id: expenses.id });
+    const inserted = await tx.insert(expenses).values({ ...input, notes: input.notes || null, createdBy: userId, cashSessionId: activeCash[0]?.id ?? null }).returning({ id: expenses.id });
     const id = Number(inserted[0].id);
     await tx.insert(auditLogs).values({ userId, action: "CREATE_EXPENSE", entityType: "expense", entityId: id, description: `Registrou despesa: ${input.description}${input.method === "cash" ? " paga em dinheiro e vinculada ao caixa" : ""}` });
     return { id };
@@ -1415,14 +1208,6 @@ export async function getCurrentCashSession() {
   if (!db) throw new Error("Banco de dados indisponível");
   const rows = await db.select().from(cashSessions).where(eq(cashSessions.status, "open")).orderBy(desc(cashSessions.id)).limit(1);
   return rows[0] ? getCashSessionReport(db, rows[0]) : null;
-}
-
-export async function getCashSessionStatus() {
-  await ensureInitialData();
-  const db = await getDb();
-  if (!db) throw new Error("Banco de dados indisponível");
-  const rows = await db.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).limit(1);
-  return { open: Boolean(rows[0]) };
 }
 
 export async function getCashSessionDetails(sessionId: number) {

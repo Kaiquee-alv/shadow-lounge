@@ -51,7 +51,7 @@ export default function CashPage() {
     { enabled: selectedSessionId !== null, retry: false },
   );
   const invalidateCash = async () => {
-    await Promise.all([utils.cash.current.invalidate(), utils.cash.history.invalidate(), utils.cash.details.invalidate(), utils.lounge.cashStatus.invalidate()]);
+    await Promise.all([utils.cash.current.invalidate(), utils.cash.history.invalidate(), utils.cash.details.invalidate()]);
   };
 
   const openMutation = trpc.cash.open.useMutation({

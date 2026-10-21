@@ -11,16 +11,12 @@ import {
   addCashMovement,
   adjustStock,
   adjustTabValue,
-  claimNextPrintJob,
   closeTab,
   closeCashSession,
-  completePrintJob,
   createExpense,
-  enqueuePrintJob,
   ensureInitialData,
   getDashboard,
   getCurrentCashSession,
-  getCashSessionStatus,
   getCashSessionDetails,
   getReportSummary,
   getLocalRole,
@@ -46,7 +42,6 @@ import {
   setTabCharges,
   setTabCustomerName,
   listCustomers,
-  releasePrintJob,
   saveCustomer,
   deleteCustomer,
   assignTabCustomer,
@@ -69,7 +64,6 @@ import {
   updateRolePermissions,
 } from "./db.js";
 import { weekdaysToMask } from "./price-rule-utils.js";
-import { enqueuePrintJobSchema } from "@shared/print-jobs";
 
 const paymentMethod = z.enum(["pix", "cash", "debit", "credit", "other"]);
 const localRole = z.enum(["administrator", "manager", "attendant"]);
@@ -94,21 +88,6 @@ async function requireFeature(ctx: any, feature: AccessFeature) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Seu perfil não tem acesso a esta funcionalidade" });
   }
   return profile;
-}
-
-async function requireAnyFeature(ctx: any, features: AccessFeature[]) {
-  const profile = await operator(ctx);
-  if (profile.localRole === "administrator") return profile;
-  const permissions = await getRolePermissions();
-  if (!features.some((feature) => canAccessFeature(profile.localRole, permissions, feature))) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Seu perfil não tem acesso a esta funcionalidade" });
-  }
-  return profile;
-}
-
-async function requireOpenCash() {
-  const status = await getCashSessionStatus();
-  if (!status.open) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Abra o caixa antes de realizar operações financeiras" });
 }
 
 export const appRouter = router({
@@ -178,10 +157,6 @@ export const appRouter = router({
       await requireFeature(ctx, "tables");
       return listTables();
     }),
-    cashStatus: protectedProcedure.query(async ({ ctx }) => {
-      await requireAnyFeature(ctx, ["tables", "finance", "cash"]);
-      return getCashSessionStatus();
-    }),
     tab: protectedProcedure.input(z.object({ tabId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
       return getTabDetails(input.tabId);
@@ -209,14 +184,7 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
       if (input.payments.length > 0) await requireFeature(ctx, "cash");
-      try {
-        return await syncOfflineTab(input, ctx.user.id);
-      } catch (error) {
-        if (error instanceof Error && error.message === "Abra o caixa antes de realizar operações financeiras") {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-        }
-        throw error;
-      }
+      return syncOfflineTab(input, ctx.user.id);
     }),
     transferTab: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), destinationTableId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
@@ -226,14 +194,12 @@ export const appRouter = router({
       tabId: z.number().int().positive(), productId: z.number().int().positive(), quantity: z.number().int().min(1).max(99), note: z.string().max(500).optional(),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
-      await requireOpenCash();
       return addTabItem(input, ctx.user.id, ctx.user.name ?? "Operador");
     }),
     setItemQuantity: protectedProcedure.input(z.object({
       itemId: z.number().int().positive(), quantity: z.number().int().min(0).max(99), note: z.string().max(500).optional(),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
-      await requireOpenCash();
       return setTabItemQuantity(input, ctx.user.id);
     }),
     pay: protectedProcedure.input(z.object({
@@ -241,14 +207,7 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
       await requireFeature(ctx, "cash");
-      try {
-        return await registerPayment(input, ctx.user.id);
-      } catch (error) {
-        if (error instanceof Error && error.message === "Abra o caixa antes de realizar operações financeiras") {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
-        }
-        throw error;
-      }
+      return registerPayment(input, ctx.user.id);
     }),
     closeTab: protectedProcedure.input(z.object({ tabId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
@@ -256,7 +215,6 @@ export const appRouter = router({
     }),
     setCharges: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), tipPercent: z.union([z.literal(0), z.literal(10)]) })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
-      await requireOpenCash();
       return setTabCharges(input, ctx.user.id);
     }),
     adjustTabValue: protectedProcedure.input(z.object({
@@ -265,7 +223,6 @@ export const appRouter = router({
       reason: z.string().trim().min(5).max(500),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "adjustTabValue");
-      await requireOpenCash();
       return adjustTabValue(input, ctx.user.id);
     }),
   }),
@@ -346,7 +303,6 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "finance");
       if (input.method === "cash") await requireFeature(ctx, "cash");
-      await requireOpenCash();
       return createExpense(input, ctx.user.id);
     }),
   }),
@@ -373,7 +329,6 @@ export const appRouter = router({
       description: z.string().trim().min(2).max(240),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "cash");
-      await requireOpenCash();
       return addCashMovement(input, ctx.user.id);
     }),
     addExpense: protectedProcedure.input(z.object({
@@ -383,7 +338,6 @@ export const appRouter = router({
       notes: z.string().max(2000).optional(),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "cash");
-      await requireOpenCash();
       return createExpense({ ...input, method: "cash", occurredAt: new Date() }, ctx.user.id);
     }),
     close: protectedProcedure.input(z.object({
@@ -487,27 +441,6 @@ export const appRouter = router({
     list: protectedProcedure.query(async ({ ctx }) => { await requireFeature(ctx, "customers"); return listCustomers(); }),
     save: protectedProcedure.input(z.object({ id: z.number().int().positive().optional(), name: z.string().trim().min(2).max(160), cpf: z.string().min(11).max(18).refine(isValidCpf, "CPF inválido. Confira os 11 dígitos e tente novamente."), phone: z.string().max(30).optional(), notes: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => { await requireFeature(ctx, "customers"); return saveCustomer(input, ctx.user.id); }),
     delete: protectedProcedure.input(z.object({ customerId: z.number().int().positive() })).mutation(async ({ ctx, input }) => { await requireFeature(ctx, "customers"); return deleteCustomer(input.customerId, ctx.user.id); }),
-  }),
-  printQueue: router({
-    enqueue: protectedProcedure.input(enqueuePrintJobSchema).mutation(async ({ ctx, input }) => {
-      await requireFeature(ctx, "tables");
-      return enqueuePrintJob(input, ctx.user.id);
-    }),
-    claimNext: protectedProcedure.input(z.object({ stationId: z.string().uuid() })).mutation(async ({ ctx, input }) => {
-      await requireRole(ctx, ["administrator", "manager"]);
-      await requireFeature(ctx, "tables");
-      return claimNextPrintJob(ctx.user.id, input.stationId);
-    }),
-    complete: protectedProcedure.input(z.object({ jobId: z.number().int().positive(), stationId: z.string().uuid(), claimToken: z.string().length(64) })).mutation(async ({ ctx, input }) => {
-      await requireRole(ctx, ["administrator", "manager"]);
-      await requireFeature(ctx, "tables");
-      return completePrintJob(input.jobId, ctx.user.id, input.stationId, input.claimToken);
-    }),
-    release: protectedProcedure.input(z.object({ jobId: z.number().int().positive(), stationId: z.string().uuid(), claimToken: z.string().length(64) })).mutation(async ({ ctx, input }) => {
-      await requireRole(ctx, ["administrator", "manager"]);
-      await requireFeature(ctx, "tables");
-      return releasePrintJob(input.jobId, ctx.user.id, input.stationId, input.claimToken);
-    }),
   }),
 });
 

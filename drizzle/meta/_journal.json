@@ -22,13 +22,6 @@
       "when": 1792348442979,
       "tag": "0008_cash_sessions",
       "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1792540814636,
-      "tag": "0009_print_jobs",
-      "breakpoints": true
     }
   ]
 }
