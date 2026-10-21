@@ -29,6 +29,13 @@
       "when": 1792542714307,
       "tag": "0009_print_agent",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792616987464,
+      "tag": "0010_windows_print_bridge",
+      "breakpoints": true
     }
   ]
 }

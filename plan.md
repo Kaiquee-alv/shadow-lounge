@@ -43,7 +43,7 @@ Implementar no Shadow Lounge um caixa simples por sessão/turno, que pode atrave
 - Tipos de job: comanda, pedido do barista e resumo da sessão do caixa (aberta ou fechada).
 
 ### Segurança e persistência
-- `drizzle/schema.ts`, `drizzle/0009_print_agent.sql` e o bootstrap idempotente adicionam o agente único e a fila persistente no PostgreSQL. O servidor mantém somente hashes SHA-256 dos tokens; o token em texto é entregue uma vez no pareamento e protegido com DPAPI `CurrentUser` no Windows.
+- `drizzle/schema.ts`, `drizzle/0009_print_agent.sql`, `drizzle/0010_windows_print_bridge.sql` e o bootstrap idempotente adicionam o agente único e a fila persistente em `windows_print_agents` e `windows_print_jobs`. As tabelas legadas `printer_agents` e `print_jobs` são preservadas sem alteração para evitar colisão e perda/reenfileiramento de trabalhos antigos. O servidor mantém somente hashes SHA-256 dos tokens; o token em texto é entregue uma vez no pareamento e protegido com DPAPI `CurrentUser` no Windows.
 - Um administrador autenticado gera código aleatório de uso único, com validade de 10 minutos, ou revoga o agente. O status do agente é visível somente a administradores; nunca são expostos token/hash no browser ou logs.
 - Usuários com acesso a Mesas podem enfileirar comandas/pedidos do barista; usuários com Caixa podem enfileirar resumos do caixa. Os endpoints de polling e resultado exigem Bearer token, e o agente só altera jobs vinculados a seu identificador.
 - A reivindicação usa transação e `FOR UPDATE SKIP LOCKED`. Se o processo perder a conexão enquanto um job está sendo impresso, ele passa a `uncertain` após cinco minutos e não é reenviado automaticamente, reduzindo duplicatas. `printed` significa que o spooler Windows aceitou o job, não confirmação física do papel.
@@ -53,7 +53,7 @@ Implementar no Shadow Lounge um caixa simples por sessão/turno, que pode atrave
 - `client/src/pages/CashPage.tsx`: envio de resumo de caixa atual e de sessões fechadas.
 - `client/src/pages/Home.tsx` (painel em configurações): status de agente, código temporário e revogação, restritos ao administrador.
 - `server/app.ts`: endpoints HTTPS REST de pareamento, claim/polling e resultado do agente.
-- `server/db.ts`, `drizzle/schema.ts` e `drizzle/0009_print_agent.sql`: persistência da fila, segurança do token, expiração e bootstrap de banco existente.
+- `server/db.ts`, `drizzle/schema.ts` e `drizzle/0009_print_agent.sql`/`drizzle/0010_windows_print_bridge.sql`: persistência isolada da fila Windows, segurança do token, expiração e bootstrap compatível com bancos que já tenham uma fila `print_jobs` legada.
 - `scripts/windows-print-agent/`: guia de instalação, instalador PowerShell e worker oculto agendado no logon.
 - `server/routers.ts`: procedures tRPC protegidas para status e administração do agente, autorização funcional do usuário e enfileiramento a partir dos dados de banco (sem confiar em totais enviados pelo navegador).
 

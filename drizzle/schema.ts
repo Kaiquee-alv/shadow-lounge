@@ -325,7 +325,7 @@ export const settings = pgTable("settings", {
 });
 
 export const printerAgents = pgTable(
-  "printer_agents",
+  "windows_print_agents",
   {
     id: integer("id").primaryKey(),
     computerName: varchar("computerName", { length: 120 }).notNull(),
@@ -339,13 +339,13 @@ export const printerAgents = pgTable(
     updatedAt: timestamp("updatedAt").defaultNow().notNull(),
   },
   (table) => [
-    check("printer_agents_singleton_check", sql`${table.id} = 1`),
-    uniqueIndex("printer_agents_token_hash_unique").on(table.tokenHash),
+    check("windows_print_agents_singleton_check", sql`${table.id} = 1`),
+    uniqueIndex("windows_print_agents_token_hash_unique").on(table.tokenHash),
   ],
 );
 
 export const printJobs = pgTable(
-  "print_jobs",
+  "windows_print_jobs",
   {
     id: serial("id").primaryKey(),
     agentId: integer("agentId").notNull().references(() => printerAgents.id),
@@ -360,10 +360,10 @@ export const printJobs = pgTable(
     completedAt: timestamp("completedAt"),
   },
   (table) => [
-    check("print_jobs_kind_check", sql`${table.kind} IN ('tab', 'barista', 'cash')`),
-    check("print_jobs_status_check", sql`${table.status} IN ('queued', 'processing', 'printed', 'failed', 'uncertain')`),
-    index("print_jobs_queue_idx").on(table.agentId, table.status, table.createdAt),
-    index("print_jobs_created_idx").on(table.createdAt),
+    check("windows_print_jobs_kind_check", sql`${table.kind} IN ('tab', 'barista', 'cash')`),
+    check("windows_print_jobs_status_check", sql`${table.status} IN ('queued', 'processing', 'printed', 'failed', 'uncertain')`),
+    index("windows_print_jobs_queue_idx").on(table.agentId, table.status, table.createdAt),
+    index("windows_print_jobs_created_idx").on(table.createdAt),
   ],
 );
 

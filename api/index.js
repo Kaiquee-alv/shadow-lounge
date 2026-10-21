@@ -562,7 +562,7 @@ var settings = pgTable("settings", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull()
 });
 var printerAgents = pgTable(
-  "printer_agents",
+  "windows_print_agents",
   {
     id: integer("id").primaryKey(),
     computerName: varchar("computerName", { length: 120 }).notNull(),
@@ -576,12 +576,12 @@ var printerAgents = pgTable(
     updatedAt: timestamp("updatedAt").defaultNow().notNull()
   },
   (table) => [
-    check("printer_agents_singleton_check", sql`${table.id} = 1`),
-    uniqueIndex("printer_agents_token_hash_unique").on(table.tokenHash)
+    check("windows_print_agents_singleton_check", sql`${table.id} = 1`),
+    uniqueIndex("windows_print_agents_token_hash_unique").on(table.tokenHash)
   ]
 );
 var printJobs = pgTable(
-  "print_jobs",
+  "windows_print_jobs",
   {
     id: serial("id").primaryKey(),
     agentId: integer("agentId").notNull().references(() => printerAgents.id),
@@ -596,10 +596,10 @@ var printJobs = pgTable(
     completedAt: timestamp("completedAt")
   },
   (table) => [
-    check("print_jobs_kind_check", sql`${table.kind} IN ('tab', 'barista', 'cash')`),
-    check("print_jobs_status_check", sql`${table.status} IN ('queued', 'processing', 'printed', 'failed', 'uncertain')`),
-    index("print_jobs_queue_idx").on(table.agentId, table.status, table.createdAt),
-    index("print_jobs_created_idx").on(table.createdAt)
+    check("windows_print_jobs_kind_check", sql`${table.kind} IN ('tab', 'barista', 'cash')`),
+    check("windows_print_jobs_status_check", sql`${table.status} IN ('queued', 'processing', 'printed', 'failed', 'uncertain')`),
+    index("windows_print_jobs_queue_idx").on(table.agentId, table.status, table.createdAt),
+    index("windows_print_jobs_created_idx").on(table.createdAt)
   ]
 );
 var auditLogs = pgTable(
@@ -1030,11 +1030,11 @@ async function initializeInitialData() {
   await db.execute(sql2`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
   await db.execute(sql2`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
   await db.execute(sql2`CREATE INDEX IF NOT EXISTS "tabs_status_idx" ON "tabs" ("status")`);
-  await db.execute(sql2`CREATE TABLE IF NOT EXISTS "printer_agents" ("id" integer PRIMARY KEY, CONSTRAINT "printer_agents_singleton_check" CHECK ("id" = 1), "computerName" varchar(120) NOT NULL, "printerName" varchar(160) NOT NULL, "pairingCodeHash" varchar(64), "pairingCodeExpiresAt" timestamp, "tokenHash" varchar(64), "enabled" boolean NOT NULL DEFAULT true, "lastSeenAt" timestamp, "pairedAt" timestamp, "updatedAt" timestamp NOT NULL DEFAULT now())`);
-  await db.execute(sql2`CREATE UNIQUE INDEX IF NOT EXISTS "printer_agents_token_hash_unique" ON "printer_agents" ("tokenHash")`);
-  await db.execute(sql2`CREATE TABLE IF NOT EXISTS "print_jobs" ("id" serial PRIMARY KEY, "agentId" integer NOT NULL REFERENCES "printer_agents"("id"), "kind" varchar(20) NOT NULL CHECK ("kind" IN ('tab', 'barista', 'cash')), "status" varchar(20) NOT NULL DEFAULT 'queued' CHECK ("status" IN ('queued', 'processing', 'printed', 'failed', 'uncertain')), "payload" jsonb NOT NULL, "requestedBy" integer NOT NULL REFERENCES "users"("id"), "attempts" integer NOT NULL DEFAULT 0, "lastError" varchar(500), "createdAt" timestamp NOT NULL DEFAULT now(), "claimedAt" timestamp, "completedAt" timestamp)`);
-  await db.execute(sql2`CREATE INDEX IF NOT EXISTS "print_jobs_queue_idx" ON "print_jobs" ("agentId", "status", "createdAt")`);
-  await db.execute(sql2`CREATE INDEX IF NOT EXISTS "print_jobs_created_idx" ON "print_jobs" ("createdAt")`);
+  await db.execute(sql2`CREATE TABLE IF NOT EXISTS "windows_print_agents" ("id" integer PRIMARY KEY, CONSTRAINT "windows_print_agents_singleton_check" CHECK ("id" = 1), "computerName" varchar(120) NOT NULL, "printerName" varchar(160) NOT NULL, "pairingCodeHash" varchar(64), "pairingCodeExpiresAt" timestamp, "tokenHash" varchar(64), "enabled" boolean NOT NULL DEFAULT true, "lastSeenAt" timestamp, "pairedAt" timestamp, "updatedAt" timestamp NOT NULL DEFAULT now())`);
+  await db.execute(sql2`CREATE UNIQUE INDEX IF NOT EXISTS "windows_print_agents_token_hash_unique" ON "windows_print_agents" ("tokenHash")`);
+  await db.execute(sql2`CREATE TABLE IF NOT EXISTS "windows_print_jobs" ("id" serial PRIMARY KEY, "agentId" integer NOT NULL REFERENCES "windows_print_agents"("id"), "kind" varchar(20) NOT NULL CHECK ("kind" IN ('tab', 'barista', 'cash')), "status" varchar(20) NOT NULL DEFAULT 'queued' CHECK ("status" IN ('queued', 'processing', 'printed', 'failed', 'uncertain')), "payload" jsonb NOT NULL, "requestedBy" integer NOT NULL REFERENCES "users"("id"), "attempts" integer NOT NULL DEFAULT 0, "lastError" varchar(500), "createdAt" timestamp NOT NULL DEFAULT now(), "claimedAt" timestamp, "completedAt" timestamp)`);
+  await db.execute(sql2`CREATE INDEX IF NOT EXISTS "windows_print_jobs_queue_idx" ON "windows_print_jobs" ("agentId", "status", "createdAt")`);
+  await db.execute(sql2`CREATE INDEX IF NOT EXISTS "windows_print_jobs_created_idx" ON "windows_print_jobs" ("createdAt")`);
   await db.execute(sql2`CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation()
     RETURNS trigger
     LANGUAGE plpgsql
