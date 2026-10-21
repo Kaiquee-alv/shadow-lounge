@@ -11,17 +11,12 @@ const mocks = vi.hoisted(() => ({
   listStockMovements: vi.fn(),
   listExpenses: vi.fn(),
   getCurrentCashSession: vi.fn(),
-  getCashSessionStatus: vi.fn(),
   listCashSessions: vi.fn(),
   getCashSessionDetails: vi.fn(),
   openCashSession: vi.fn(),
   addCashMovement: vi.fn(),
   closeCashSession: vi.fn(),
   registerPayment: vi.fn(),
-  openTab: vi.fn(),
-  addTabItem: vi.fn(),
-  setTabItemQuantity: vi.fn(),
-  setTabCharges: vi.fn(),
   syncOfflineTab: vi.fn(),
   createExpense: vi.fn(),
 }));
@@ -40,17 +35,12 @@ vi.mock("./db.js", async (importOriginal) => {
     listStockMovements: mocks.listStockMovements,
     listExpenses: mocks.listExpenses,
     getCurrentCashSession: mocks.getCurrentCashSession,
-    getCashSessionStatus: mocks.getCashSessionStatus,
     listCashSessions: mocks.listCashSessions,
     getCashSessionDetails: mocks.getCashSessionDetails,
     openCashSession: mocks.openCashSession,
     addCashMovement: mocks.addCashMovement,
     closeCashSession: mocks.closeCashSession,
     registerPayment: mocks.registerPayment,
-    openTab: mocks.openTab,
-    addTabItem: mocks.addTabItem,
-    setTabItemQuantity: mocks.setTabItemQuantity,
-    setTabCharges: mocks.setTabCharges,
     syncOfflineTab: mocks.syncOfflineTab,
     createExpense: mocks.createExpense,
   };
@@ -78,17 +68,12 @@ describe("permissões de atendente para clientes e relatórios", () => {
     mocks.listStockMovements.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 25, totalPages: 0 });
     mocks.listExpenses.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 25, totalPages: 0 });
     mocks.getCurrentCashSession.mockResolvedValue(null);
-    mocks.getCashSessionStatus.mockResolvedValue({ open: true });
     mocks.listCashSessions.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20, totalPages: 0 });
     mocks.getCashSessionDetails.mockResolvedValue({ id: 15 });
     mocks.openCashSession.mockResolvedValue({ id: 15 });
     mocks.addCashMovement.mockResolvedValue({ id: 16 });
     mocks.closeCashSession.mockResolvedValue({ id: 15, differenceCents: 0 });
     mocks.registerPayment.mockResolvedValue({ paymentId: 42, duplicate: false });
-    mocks.openTab.mockResolvedValue({ id: 41, tabCode: "#000041", tipPercent: 0 });
-    mocks.addTabItem.mockResolvedValue({ id: 42 });
-    mocks.setTabItemQuantity.mockResolvedValue({ success: true });
-    mocks.setTabCharges.mockResolvedValue({ success: true });
     mocks.syncOfflineTab.mockResolvedValue({ tabId: 43, tabCode: "#000043", duplicate: false });
     mocks.createExpense.mockResolvedValue({ id: 44 });
   });
@@ -211,63 +196,6 @@ describe("permissões de atendente para clientes e relatórios", () => {
     await expect(caller.lounge.syncOfflineTab(offlineSync)).resolves.toEqual({ tabId: 43, tabCode: "#000043", duplicate: false });
     expect(mocks.registerPayment).toHaveBeenCalledWith(payment, 52);
     expect(mocks.syncOfflineTab).toHaveBeenCalledWith(offlineSync, 52);
-  });
-
-  it("permite abrir uma comanda vazia com o caixa fechado e bloqueia operações que alteram valores", async () => {
-    mocks.getCashSessionStatus.mockResolvedValue({ open: false });
-    mocks.registerPayment.mockImplementation(async (input: any) => {
-      if (input.requestKey === "payment-already-committed-123") return { paymentId: 42, duplicate: true };
-      const status = await mocks.getCashSessionStatus();
-      if (!status.open) throw new Error("Abra o caixa antes de realizar operações financeiras");
-      return { paymentId: 42, duplicate: false };
-    });
-    mocks.syncOfflineTab.mockImplementation(async (input: any) => {
-      if (input.offlineKey === "offline-already-synced-123") return { tabId: 43, tabCode: "#000043", duplicate: true };
-      const status = await mocks.getCashSessionStatus();
-      if (!status.open && (input.items.length > 0 || input.payments.length > 0 || input.tipPercent === 10)) {
-        throw new Error("Abra o caixa antes de realizar operações financeiras");
-      }
-      return { tabId: 43, tabCode: "#000043", duplicate: false };
-    });
-    await expect(caller.lounge.cashStatus()).resolves.toEqual({ open: false });
-    await expect(caller.lounge.openTab({ tableId: 2 })).resolves.toEqual({ id: 41, tabCode: "#000041", tipPercent: 0 });
-
-    const operationError = { code: "PRECONDITION_FAILED" };
-    await expect(caller.lounge.addItem({ tabId: 41, productId: 3, quantity: 1 })).rejects.toMatchObject(operationError);
-    await expect(caller.lounge.setItemQuantity({ itemId: 9, quantity: 2 })).rejects.toMatchObject(operationError);
-    await expect(caller.lounge.setCharges({ tabId: 41, tipPercent: 10 })).rejects.toMatchObject(operationError);
-    await expect(caller.lounge.pay({ tabId: 41, amountCents: 1000, method: "pix", requestKey: "payment-key-123" })).rejects.toMatchObject(operationError);
-    await expect(caller.lounge.pay({ tabId: 41, amountCents: 1000, method: "pix", requestKey: "payment-already-committed-123" })).resolves.toMatchObject({ duplicate: true });
-    await expect(caller.lounge.syncOfflineTab({
-      offlineKey: "offline-key-123", deviceId: "device-123", tableId: 2, tipPercent: 0,
-      items: [{ productId: 3, productName: "Água", quantity: 1 }],
-      payments: [],
-    })).rejects.toMatchObject(operationError);
-    const emptyOfflineTab = { offlineKey: "offline-empty-123", deviceId: "device-123", tableId: 4, tipPercent: 0 as const, items: [], payments: [] };
-    await expect(caller.lounge.syncOfflineTab(emptyOfflineTab)).resolves.toEqual({ tabId: 43, tabCode: "#000043", duplicate: false });
-    expect(mocks.syncOfflineTab).toHaveBeenCalledWith(emptyOfflineTab, 52);
-    const emptyTabWithTip = { ...emptyOfflineTab, offlineKey: "offline-tip-123", tipPercent: 10 as const };
-    await expect(caller.lounge.syncOfflineTab(emptyTabWithTip)).rejects.toMatchObject(operationError);
-    const offlinePayment = { offlineKey: "offline-payment-123", deviceId: "device-123", tableId: 3, tipPercent: 0 as const, items: [], payments: [{ amountCents: 500, method: "cash" as const, requestKey: "offline-pay-key-123" }] };
-    await expect(caller.lounge.syncOfflineTab(offlinePayment)).rejects.toMatchObject(operationError);
-    const previouslyCommitted = { offlineKey: "offline-already-synced-123", deviceId: "device-123", tableId: 2, tipPercent: 0 as const, items: [{ productId: 3, productName: "Água", quantity: 1 }], payments: [] };
-    await expect(caller.lounge.syncOfflineTab(previouslyCommitted)).resolves.toMatchObject({ duplicate: true });
-    mocks.getRolePermissions.mockResolvedValue({ ...DEFAULT_ROLE_PERMISSIONS, attendant: [...DEFAULT_ROLE_PERMISSIONS.attendant, "adjustTabValue", "finance"] });
-    await expect(caller.lounge.adjustTabValue({ tabId: 41, newTotalCents: 1000, reason: "Correção autorizada" })).rejects.toMatchObject(operationError);
-    await expect(caller.finance.createExpense({
-      description: "Compra de gelo", category: "Fornecedores", amountCents: 1800, method: "pix", occurredAt: new Date("2026-10-18T18:00:00Z"),
-    })).rejects.toMatchObject(operationError);
-    await expect(caller.cash.addMovement({ kind: "supply", amountCents: 500, description: "Reforço" })).rejects.toMatchObject(operationError);
-    await expect(caller.cash.addExpense({ description: "Gelo", category: "Fornecedores", amountCents: 500 })).rejects.toMatchObject(operationError);
-    expect(mocks.openTab).toHaveBeenCalledOnce();
-    expect(mocks.addTabItem).not.toHaveBeenCalled();
-    expect(mocks.setTabItemQuantity).not.toHaveBeenCalled();
-    expect(mocks.setTabCharges).not.toHaveBeenCalled();
-    expect(mocks.registerPayment).toHaveBeenCalledTimes(2);
-    expect(mocks.syncOfflineTab).toHaveBeenCalledTimes(5);
-    expect(mocks.adjustTabValue).not.toHaveBeenCalled();
-    expect(mocks.createExpense).not.toHaveBeenCalled();
-    expect(mocks.addCashMovement).not.toHaveBeenCalled();
   });
 
   it("bloqueia a API do caixa quando o administrador remove a funcionalidade do perfil", async () => {

@@ -324,49 +324,6 @@ export const settings = pgTable("settings", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
 });
 
-export const printerAgents = pgTable(
-  "printer_agents",
-  {
-    id: integer("id").primaryKey(),
-    computerName: varchar("computerName", { length: 120 }).notNull(),
-    printerName: varchar("printerName", { length: 160 }).notNull(),
-    pairingCodeHash: varchar("pairingCodeHash", { length: 64 }),
-    pairingCodeExpiresAt: timestamp("pairingCodeExpiresAt"),
-    tokenHash: varchar("tokenHash", { length: 64 }),
-    enabled: boolean("enabled").default(true).notNull(),
-    lastSeenAt: timestamp("lastSeenAt"),
-    pairedAt: timestamp("pairedAt"),
-    updatedAt: timestamp("updatedAt").defaultNow().notNull(),
-  },
-  (table) => [
-    check("printer_agents_singleton_check", sql`${table.id} = 1`),
-    uniqueIndex("printer_agents_token_hash_unique").on(table.tokenHash),
-  ],
-);
-
-export const printJobs = pgTable(
-  "print_jobs",
-  {
-    id: serial("id").primaryKey(),
-    agentId: integer("agentId").notNull().references(() => printerAgents.id),
-    kind: varchar("kind", { length: 20 }).$type<"tab" | "barista" | "cash">().notNull(),
-    status: varchar("status", { length: 20 }).$type<"queued" | "processing" | "printed" | "failed" | "uncertain">().default("queued").notNull(),
-    payload: jsonb("payload").$type<{ kind: "tab" | "barista" | "cash"; lines: Array<{ text: string; align?: "left" | "center"; size?: "small" | "normal" | "large"; bold?: boolean; separator?: boolean }> }>().notNull(),
-    requestedBy: integer("requestedBy").notNull().references(() => users.id),
-    attempts: integer("attempts").default(0).notNull(),
-    lastError: varchar("lastError", { length: 500 }),
-    createdAt: timestamp("createdAt").defaultNow().notNull(),
-    claimedAt: timestamp("claimedAt"),
-    completedAt: timestamp("completedAt"),
-  },
-  (table) => [
-    check("print_jobs_kind_check", sql`${table.kind} IN ('tab', 'barista', 'cash')`),
-    check("print_jobs_status_check", sql`${table.status} IN ('queued', 'processing', 'printed', 'failed', 'uncertain')`),
-    index("print_jobs_queue_idx").on(table.agentId, table.status, table.createdAt),
-    index("print_jobs_created_idx").on(table.createdAt),
-  ],
-);
-
 export const auditLogs = pgTable(
   "audit_logs",
   {
