@@ -1,9 +1,11 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
-import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, gt, inArray, lte, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
   auditLogs,
+  printerAgents,
+  printJobs,
   cashMovements,
   cashSessions,
   customers,
@@ -34,6 +36,7 @@ import { priceRuleAppliesAt, saoPauloClock, timeInWindow, weekdaysFromMask, week
 import { planTabTotalAdjustment } from "./tab-adjustment-utils.js";
 import { buildDailyRevenue } from "./daily-revenue-utils.js";
 import { addDaysToSaoPauloDateKey, saoPauloDateKey, saoPauloDayStart } from "../shared/sao-paulo-time.js";
+import { buildBaristaPrintPayload, buildCashSessionPrintPayload, buildTabPrintPayload, createPrinterAgentToken, createPrinterPairingCode as generatePrinterPairingCode, hashPrinterSecret, printerSecretMatches, type PrintReceiptPayload } from "./printer-utils.js";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _pool: Pool | null = null;
@@ -144,6 +147,11 @@ async function initializeInitialData() {
   await db.execute(sql`DROP INDEX IF EXISTS "tab_items_tab_product_unique"`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "tab_items_tab_product_idx" ON "tab_items" ("tabId", "productId")`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "tabs_status_idx" ON "tabs" ("status")`);
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "printer_agents" ("id" integer PRIMARY KEY, CONSTRAINT "printer_agents_singleton_check" CHECK ("id" = 1), "computerName" varchar(120) NOT NULL, "printerName" varchar(160) NOT NULL, "pairingCodeHash" varchar(64), "pairingCodeExpiresAt" timestamp, "tokenHash" varchar(64), "enabled" boolean NOT NULL DEFAULT true, "lastSeenAt" timestamp, "pairedAt" timestamp, "updatedAt" timestamp NOT NULL DEFAULT now())`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "printer_agents_token_hash_unique" ON "printer_agents" ("tokenHash")`);
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "print_jobs" ("id" serial PRIMARY KEY, "agentId" integer NOT NULL REFERENCES "printer_agents"("id"), "kind" varchar(20) NOT NULL CHECK ("kind" IN ('tab', 'barista', 'cash')), "status" varchar(20) NOT NULL DEFAULT 'queued' CHECK ("status" IN ('queued', 'processing', 'printed', 'failed', 'uncertain')), "payload" jsonb NOT NULL, "requestedBy" integer NOT NULL REFERENCES "users"("id"), "attempts" integer NOT NULL DEFAULT 0, "lastError" varchar(500), "createdAt" timestamp NOT NULL DEFAULT now(), "claimedAt" timestamp, "completedAt" timestamp)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "print_jobs_queue_idx" ON "print_jobs" ("agentId", "status", "createdAt")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "print_jobs_created_idx" ON "print_jobs" ("createdAt")`);
   await db.execute(sql`CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation()
     RETURNS trigger
     LANGUAGE plpgsql
@@ -217,6 +225,12 @@ export async function writeAudit(userId: number, action: string, entityType: str
 
 function asNumber(value: unknown) {
   return Number(value ?? 0);
+}
+
+async function requireOpenCashSession(tx: any) {
+  const active = await tx.select().from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
+  if (!active[0]) throw new Error("Abra o caixa antes de realizar operações financeiras");
+  return active[0];
 }
 
 function hashPassword(password: string, salt = randomBytes(16).toString("hex")) {
@@ -599,7 +613,9 @@ export async function openTab(tableId: number, userId: number, openedByName: str
     if (!table[0]) throw new Error("Mesa não encontrada");
     const existingOpenTab = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, tableId), eq(tabs.status, "open"))).limit(1);
     if (existingOpenTab[0]) throw new Error("Esta mesa já possui uma comanda aberta");
-    const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId, tipPercent: 10 }).returning({ id: tabs.id, openedAt: tabs.openedAt });
+    const activeCash = await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
+    const defaultTipPercent = activeCash[0] ? 10 : 0;
+    const inserted = await tx.insert(tabs).values({ tableId, tabCode: `ABERTA-${Date.now()}`, openedBy: userId, tipPercent: defaultTipPercent }).returning({ id: tabs.id, openedAt: tabs.openedAt });
     const tabId = Number(inserted[0].id);
     const tabCode = `#${String(tabId).padStart(6, "0")}`;
     await tx.update(tabs).set({ tabCode }).where(eq(tabs.id, tabId));
@@ -620,7 +636,7 @@ export async function openTab(tableId: number, userId: number, openedByName: str
       openedByName,
       discountPercent: 0,
       discountCents: 0,
-      tipPercent: 10,
+      tipPercent: defaultTipPercent,
       tipCents: 0,
       manualAdjustmentCents: 0,
       adjustmentReason: null,
@@ -659,17 +675,15 @@ export async function syncOfflineTab(input: {
       }
       return { tabId: existing[0].id, tabCode: existing[0].tabCode, duplicate: true };
     }
+    const activeCash = input.items.length > 0 || input.payments.length > 0 || input.tipPercent === 10
+      ? await requireOpenCashSession(tx)
+      : null;
     await tx.execute(sql`SELECT id FROM lounge_tables WHERE id = ${input.tableId} FOR UPDATE`);
     const table = await tx.select().from(loungeTables).where(eq(loungeTables.id, input.tableId)).limit(1);
     if (!table[0]) throw new Error("Mesa não encontrada");
     const open = await tx.select({ id: tabs.id }).from(tabs).where(and(eq(tabs.tableId, input.tableId), eq(tabs.status, "open"))).limit(1);
     if (open[0]) throw new Error(`A mesa ${table[0].number} já possui uma comanda aberta`);
-    let cashSessionId: number | null = null;
-    if (input.payments.length > 0) {
-      const activeCash = await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
-      if (!activeCash[0]) throw new Error("Abra o caixa antes de sincronizar pagamentos offline");
-      cashSessionId = Number(activeCash[0].id);
-    }
+    const cashSessionId: number | null = activeCash ? Number(activeCash.id) : null;
     const inserted = await tx.insert(tabs).values({ tableId: input.tableId, tabCode: `OFFLINE-${Date.now()}`, offlineKey: input.offlineKey, offlineFingerprint: fingerprint, customerName: input.customerName?.trim() || null, openedBy: userId }).returning({ id: tabs.id });
     const tabId = Number(inserted[0].id);
     const tabCode = `#${String(tabId).padStart(6, "0")}`;
@@ -737,6 +751,7 @@ export async function addTabItem(input: { tabId: number; productId: number; quan
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
+    await requireOpenCashSession(tx);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).for("update").limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
     const product = await tx.select().from(products).where(eq(products.id, input.productId)).for("update").limit(1);
@@ -815,6 +830,7 @@ export async function setTabItemQuantity(input: { itemId: number; quantity: numb
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
+    await requireOpenCashSession(tx);
     const item = await tx.select().from(tabItems).where(eq(tabItems.id, input.itemId)).limit(1);
     if (!item[0]) throw new Error("Item não encontrado");
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${item[0].tabId} FOR UPDATE`);
@@ -861,6 +877,7 @@ export async function setTabCharges(input: { tabId: number; tipPercent: 0 | 10 }
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
+    await requireOpenCashSession(tx);
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
@@ -879,6 +896,7 @@ export async function adjustTabValue(input: { tabId: number; newTotalCents: numb
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
+    await requireOpenCashSession(tx);
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
     const tab = await tx.select().from(tabs).where(eq(tabs.id, input.tabId)).limit(1);
     if (!tab[0] || tab[0].status !== "open") throw new Error("Esta comanda está encerrada");
@@ -925,7 +943,7 @@ export async function registerPayment(input: { tabId: number; amountCents: numbe
     const previous = await tx.select({ id: payments.id, tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method }).from(payments).where(eq(payments.requestKey, input.requestKey)).limit(1);
     if (previous[0]) return returnDuplicateOrRejectMismatch(previous[0]);
     const activeCash = await tx.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
-    if (!activeCash[0]) throw new Error("Abra o caixa antes de registrar recebimentos");
+    if (!activeCash[0]) throw new Error("Abra o caixa antes de realizar operações financeiras");
     const duplicateAfterLock = await tx.select({ id: payments.id, tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method }).from(payments).where(eq(payments.requestKey, input.requestKey)).limit(1);
     if (duplicateAfterLock[0]) return returnDuplicateOrRejectMismatch(duplicateAfterLock[0]);
     await tx.execute(sql`SELECT id FROM tabs WHERE id = ${input.tabId} FOR UPDATE`);
@@ -1097,13 +1115,12 @@ export async function createExpense(input: { description: string; category: stri
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
-    const activeCash = await tx.select().from(cashSessions).where(eq(cashSessions.status, "open")).for("update").limit(1);
-    if (input.method === "cash" && !activeCash[0]) throw new Error("Abra o caixa antes de registrar uma despesa em dinheiro");
-    if (input.method === "cash" && activeCash[0]) {
-      const summary = await getCashSessionReport(tx, activeCash[0]);
+    const activeCash = await requireOpenCashSession(tx);
+    if (input.method === "cash") {
+      const summary = await getCashSessionReport(tx, activeCash);
       if (!isCashOutflowAllowed(input.amountCents, summary.expectedCashCents)) throw new Error("A despesa supera o dinheiro esperado disponível no caixa");
     }
-    const inserted = await tx.insert(expenses).values({ ...input, notes: input.notes || null, createdBy: userId, cashSessionId: activeCash[0]?.id ?? null }).returning({ id: expenses.id });
+    const inserted = await tx.insert(expenses).values({ ...input, notes: input.notes || null, createdBy: userId, cashSessionId: activeCash.id }).returning({ id: expenses.id });
     const id = Number(inserted[0].id);
     await tx.insert(auditLogs).values({ userId, action: "CREATE_EXPENSE", entityType: "expense", entityId: id, description: `Registrou despesa: ${input.description}${input.method === "cash" ? " paga em dinheiro e vinculada ao caixa" : ""}` });
     return { id };
@@ -1208,6 +1225,14 @@ export async function getCurrentCashSession() {
   if (!db) throw new Error("Banco de dados indisponível");
   const rows = await db.select().from(cashSessions).where(eq(cashSessions.status, "open")).orderBy(desc(cashSessions.id)).limit(1);
   return rows[0] ? getCashSessionReport(db, rows[0]) : null;
+}
+
+export async function getCashSessionStatus() {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const rows = await db.select({ id: cashSessions.id }).from(cashSessions).where(eq(cashSessions.status, "open")).limit(1);
+  return { open: Boolean(rows[0]) };
 }
 
 export async function getCashSessionDetails(sessionId: number) {
@@ -1724,4 +1749,210 @@ export async function updateCommercialSettings(input: {
   });
   await writeAudit(userId, "UPDATE_SETTINGS", "settings", 1, "Atualizou as configurações de Happy Hour");
   return getCommercialSettings();
+}
+
+
+export async function createPrinterPairingCode(userId: number) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const pairingCode = generatePrinterPairingCode();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  await db.insert(printerAgents).values({
+    id: 1,
+    computerName: "",
+    printerName: "",
+    pairingCodeHash: hashPrinterSecret(pairingCode),
+    pairingCodeExpiresAt: expiresAt,
+    tokenHash: null,
+    enabled: true,
+    lastSeenAt: null,
+    pairedAt: null,
+    updatedAt: new Date(),
+  }).onConflictDoUpdate({
+    target: printerAgents.id,
+    set: {
+      computerName: "",
+      printerName: "",
+      pairingCodeHash: hashPrinterSecret(pairingCode),
+      pairingCodeExpiresAt: expiresAt,
+      tokenHash: null,
+      enabled: true,
+      lastSeenAt: null,
+      pairedAt: null,
+      updatedAt: new Date(),
+    },
+  });
+  await db.insert(auditLogs).values({
+    userId,
+    action: "CREATE_PRINTER_PAIRING_CODE",
+    entityType: "printer_agent",
+    entityId: 1,
+    description: "Gerou um código temporário de pareamento da impressora Windows",
+  });
+  return { pairingCode, expiresAt };
+}
+
+export async function pairPrinterAgent(input: { pairingCode: string; computerName: string; printerName: string }) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const agentToken = createPrinterAgentToken();
+  const now = new Date();
+  const updated = await db.update(printerAgents).set({
+    computerName: input.computerName.trim().slice(0, 120),
+    printerName: input.printerName.trim().slice(0, 160),
+    pairingCodeHash: null,
+    pairingCodeExpiresAt: null,
+    tokenHash: hashPrinterSecret(agentToken),
+    enabled: true,
+    lastSeenAt: now,
+    pairedAt: now,
+    updatedAt: now,
+  }).where(and(
+    eq(printerAgents.id, 1),
+    eq(printerAgents.enabled, true),
+    eq(printerAgents.pairingCodeHash, hashPrinterSecret(input.pairingCode)),
+    gt(printerAgents.pairingCodeExpiresAt, now),
+  )).returning({ id: printerAgents.id });
+  if (!updated[0]) throw new Error("Código inválido, expirado ou já utilizado. Gere um novo código no sistema.");
+  return { agentToken };
+}
+
+export async function getPrinterBridgeStatus() {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const [agent] = await db.select({
+    id: printerAgents.id,
+    computerName: printerAgents.computerName,
+    printerName: printerAgents.printerName,
+    enabled: printerAgents.enabled,
+    lastSeenAt: printerAgents.lastSeenAt,
+    pairedAt: printerAgents.pairedAt,
+  }).from(printerAgents).where(eq(printerAgents.id, 1)).limit(1);
+  const jobs = await db.select({
+    id: printJobs.id,
+    kind: printJobs.kind,
+    status: printJobs.status,
+    attempts: printJobs.attempts,
+    lastError: printJobs.lastError,
+    createdAt: printJobs.createdAt,
+    completedAt: printJobs.completedAt,
+  }).from(printJobs).orderBy(desc(printJobs.createdAt), desc(printJobs.id)).limit(25);
+  const online = !!agent?.enabled && !!agent.lastSeenAt && Date.now() - agent.lastSeenAt.getTime() < 45_000;
+  return {
+    agent: agent ? { ...agent, online, paired: !!agent.enabled && !!agent.pairedAt } : null,
+    jobs,
+  };
+}
+
+export async function revokePrinterAgent(userId: number) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const result = await db.update(printerAgents).set({ enabled: false, tokenHash: null, pairingCodeHash: null, pairingCodeExpiresAt: null, updatedAt: new Date() })
+    .where(eq(printerAgents.id, 1)).returning({ id: printerAgents.id });
+  await db.insert(auditLogs).values({
+    userId,
+    action: "REVOKE_PRINTER_AGENT",
+    entityType: "printer_agent",
+    entityId: 1,
+    description: "Revogou o acesso do agente de impressão Windows",
+  });
+  return { revoked: result.length > 0 };
+}
+
+async function authenticatePrinterAgent(token: string) {
+  if (!token || token.length > 200) return null;
+  const db = await getDb();
+  if (!db) return null;
+  const [agent] = await db.select({ id: printerAgents.id, enabled: printerAgents.enabled, tokenHash: printerAgents.tokenHash })
+    .from(printerAgents).where(eq(printerAgents.id, 1)).limit(1);
+  if (!agent?.enabled || !printerSecretMatches(token, agent.tokenHash)) return null;
+  return agent.id;
+}
+
+export async function claimNextPrintJob(token: string) {
+  await ensureInitialData();
+  const agentId = await authenticatePrinterAgent(token);
+  if (!agentId) throw new Error("Agente não autorizado");
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  return db.transaction(async (tx) => {
+    const now = new Date();
+    await tx.update(printerAgents).set({ lastSeenAt: now, updatedAt: now }).where(eq(printerAgents.id, agentId));
+    // Um job interrompido por uma falha do processo fica incerto e não é reenviado automaticamente:
+    // isso evita duplicar um recibo que talvez já tenha saído na impressora.
+    await tx.update(printJobs).set({ status: "uncertain", lastError: "O agente perdeu a conexão durante a impressão; verifique a impressora antes de reenviar.", completedAt: now })
+      .where(and(eq(printJobs.agentId, agentId), eq(printJobs.status, "processing"), lte(printJobs.claimedAt, new Date(now.getTime() - 5 * 60_000))));
+    const [job] = await tx.select().from(printJobs)
+      .where(and(eq(printJobs.agentId, agentId), eq(printJobs.status, "queued")))
+      .orderBy(asc(printJobs.createdAt), asc(printJobs.id))
+      .for("update", { skipLocked: true })
+      .limit(1);
+    if (!job) return null;
+    await tx.update(printJobs).set({ status: "processing", attempts: sql`${printJobs.attempts} + 1`, claimedAt: now, lastError: null }).where(eq(printJobs.id, job.id));
+    return { id: job.id, kind: job.kind, payload: job.payload as PrintReceiptPayload };
+  });
+}
+
+export async function completePrintJob(input: { token: string; jobId: number; status: "printed" | "failed"; error?: string }) {
+  await ensureInitialData();
+  const agentId = await authenticatePrinterAgent(input.token);
+  if (!agentId) throw new Error("Agente não autorizado");
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const now = new Date();
+  const changed = await db.update(printJobs).set({
+    status: input.status,
+    lastError: input.status === "failed" ? (input.error?.replace(/[\r\n\0]/g, " ").slice(0, 500) || "Falha desconhecida no agente de impressão") : null,
+    completedAt: now,
+  }).where(and(eq(printJobs.id, input.jobId), eq(printJobs.agentId, agentId), eq(printJobs.status, "processing"))).returning({ id: printJobs.id });
+  await db.update(printerAgents).set({ lastSeenAt: now, updatedAt: now }).where(eq(printerAgents.id, agentId));
+  if (!changed[0]) return { accepted: false };
+  return { accepted: true };
+}
+
+export async function queueTabPrintJob(input: { tabId: number; kind: "tab" | "barista"; itemId?: number; userId: number }) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const tab = await getTabDetails(input.tabId);
+  const payload = input.kind === "barista"
+    ? buildBaristaPrintPayload(tab, input.itemId ?? -1)
+    : buildTabPrintPayload(tab);
+  const [job] = await db.transaction(async (tx) => {
+    const [agent] = await tx.select({ id: printerAgents.id, enabled: printerAgents.enabled, tokenHash: printerAgents.tokenHash })
+      .from(printerAgents).where(eq(printerAgents.id, 1)).limit(1).for("update");
+    if (!agent?.enabled || !agent.tokenHash) throw new Error("A impressora ainda não está pareada. Configure o agente Windows primeiro.");
+    const inserted = await tx.insert(printJobs).values({
+      agentId: agent.id,
+      kind: input.kind,
+      status: "queued",
+      payload,
+      requestedBy: input.userId,
+    }).returning({ id: printJobs.id });
+    return inserted;
+  });
+  const [agentStatus] = await db.select({ lastSeenAt: printerAgents.lastSeenAt }).from(printerAgents).where(eq(printerAgents.id, 1)).limit(1);
+  return { jobId: job!.id, status: "queued" as const, agentOnline: !!agentStatus?.lastSeenAt && Date.now() - agentStatus.lastSeenAt.getTime() < 45_000 };
+}
+
+
+export async function queueCashSessionPrintJob(input: { sessionId: number; userId: number }) {
+  await ensureInitialData();
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  const session = await getCashSessionDetails(input.sessionId);
+  const payload = buildCashSessionPrintPayload(session);
+  const [job] = await db.transaction(async (tx) => {
+    const [agent] = await tx.select({ id: printerAgents.id, enabled: printerAgents.enabled, tokenHash: printerAgents.tokenHash })
+      .from(printerAgents).where(eq(printerAgents.id, 1)).limit(1).for("update");
+    if (!agent?.enabled || !agent.tokenHash) throw new Error("A impressora ainda não está pareada. Configure o agente Windows primeiro.");
+    return tx.insert(printJobs).values({ agentId: agent.id, kind: "cash", status: "queued", payload, requestedBy: input.userId })
+      .returning({ id: printJobs.id });
+  });
+  const [agentStatus] = await db.select({ lastSeenAt: printerAgents.lastSeenAt }).from(printerAgents).where(eq(printerAgents.id, 1)).limit(1);
+  return { jobId: job!.id, status: "queued" as const, agentOnline: !!agentStatus?.lastSeenAt && Date.now() - agentStatus.lastSeenAt.getTime() < 45_000 };
 }
