@@ -32,6 +32,9 @@ services:
       PORT: 3000
       DATABASE_URL: postgresql://${POSTGRES_USER:-shadow}:${POSTGRES_PASSWORD:-shadow_local_password}@db:5432/${POSTGRES_DB:-shadow_lounge}
       JWT_SECRET: ${JWT_SECRET:-change_this_local_session_secret}
+      FIXED_ADMIN_PASSWORD: ${FIXED_ADMIN_PASSWORD:-shadow1020}
+      FIXED_MANAGER_PASSWORD: ${FIXED_MANAGER_PASSWORD:-shadow1020}
+      FIXED_ATTENDANT_PASSWORD: ${FIXED_ATTENDANT_PASSWORD:-shadow1020}
     ports:
       - "${APP_PORT:-3000}:3000"
     networks:

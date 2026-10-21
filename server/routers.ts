@@ -3,7 +3,7 @@ import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { isValidCpf } from "@shared/cpf";
 import { ACCESS_FEATURES, canAccessFeature, type AccessFeature } from "@shared/role-permissions";
-import { getSessionCookieOptions } from "./_core/cookies.js";
+import { getLocalSessionCookieOptions, getSessionCookieOptions } from "./_core/cookies.js";
 import { systemRouter } from "./_core/systemRouter.js";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc.js";
 import {
@@ -17,10 +17,17 @@ import {
   ensureInitialData,
   getDashboard,
   getCurrentCashSession,
+  getCashSessionStatus,
   getCashSessionDetails,
   getReportSummary,
   getLocalRole,
   getTabDetails,
+  createPrinterPairingCode,
+  getPrinterBridgeStatus,
+  revokePrinterAgent,
+  queueTabPrintJob,
+  queueCashSessionPrintJob,
+  writeAudit,
   listProductHistory,
   listProductPriceRules,
   listUserAccess,
@@ -90,6 +97,21 @@ async function requireFeature(ctx: any, feature: AccessFeature) {
   return profile;
 }
 
+async function requireAnyFeature(ctx: any, features: AccessFeature[]) {
+  const profile = await operator(ctx);
+  if (profile.localRole === "administrator") return profile;
+  const permissions = await getRolePermissions();
+  if (!features.some((feature) => canAccessFeature(profile.localRole, permissions, feature))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Seu perfil não tem acesso a esta funcionalidade" });
+  }
+  return profile;
+}
+
+async function requireOpenCash() {
+  const status = await getCashSessionStatus();
+  if (!status.open) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Abra o caixa antes de realizar operações financeiras" });
+}
+
 export const appRouter = router({
   system: systemRouter,
   auth: router({
@@ -108,35 +130,29 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       const session = await registerLocally(input);
       if (!session) throw new TRPCError({ code: "CONFLICT", message: "Este usuário já está cadastrado" });
+      const cookieOptions = getLocalSessionCookieOptions(ctx.req as never);
       (ctx.res as any).cookie("shadow_session", session.token, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        ...cookieOptions,
         maxAge: 1000 * 60 * 60 * 12,
-        path: "/",
       });
       return { success: true, expiresAt: session.expiresAt };
     }),
     login: publicProcedure.input(z.object({ username: z.string().trim().toLowerCase().min(3).max(64), password: z.string().min(1).max(128) })).mutation(async ({ ctx, input }) => {
       const session = await loginLocally(input.username, input.password);
       if (!session) throw new TRPCError({ code: "UNAUTHORIZED", message: "Usuário ou senha inválidos" });
+      const cookieOptions = getLocalSessionCookieOptions(ctx.req as never);
       (ctx.res as any).cookie("shadow_session", session.token, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        ...cookieOptions,
         maxAge: 1000 * 60 * 60 * 12,
-        path: "/",
       });
       return { success: true, expiresAt: session.expiresAt };
     }),
     logout: publicProcedure.mutation(({ ctx }) => {
+      const cookieOptions = getLocalSessionCookieOptions(ctx.req as never);
       (ctx.res as any).cookie("shadow_session", "", {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        ...cookieOptions,
         expires: new Date(0),
         maxAge: 0,
-        path: "/",
       });
       return { success: true } as const;
     }),
@@ -156,6 +172,10 @@ export const appRouter = router({
     tables: protectedProcedure.query(async ({ ctx }) => {
       await requireFeature(ctx, "tables");
       return listTables();
+    }),
+    cashStatus: protectedProcedure.query(async ({ ctx }) => {
+      await requireAnyFeature(ctx, ["tables", "finance", "cash"]);
+      return getCashSessionStatus();
     }),
     tab: protectedProcedure.input(z.object({ tabId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
@@ -184,7 +204,14 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
       if (input.payments.length > 0) await requireFeature(ctx, "cash");
-      return syncOfflineTab(input, ctx.user.id);
+      try {
+        return await syncOfflineTab(input, ctx.user.id);
+      } catch (error) {
+        if (error instanceof Error && error.message === "Abra o caixa antes de realizar operações financeiras") {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+        }
+        throw error;
+      }
     }),
     transferTab: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), destinationTableId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
@@ -194,12 +221,14 @@ export const appRouter = router({
       tabId: z.number().int().positive(), productId: z.number().int().positive(), quantity: z.number().int().min(1).max(99), note: z.string().max(500).optional(),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
+      await requireOpenCash();
       return addTabItem(input, ctx.user.id, ctx.user.name ?? "Operador");
     }),
     setItemQuantity: protectedProcedure.input(z.object({
       itemId: z.number().int().positive(), quantity: z.number().int().min(0).max(99), note: z.string().max(500).optional(),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
+      await requireOpenCash();
       return setTabItemQuantity(input, ctx.user.id);
     }),
     pay: protectedProcedure.input(z.object({
@@ -207,7 +236,14 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
       await requireFeature(ctx, "cash");
-      return registerPayment(input, ctx.user.id);
+      try {
+        return await registerPayment(input, ctx.user.id);
+      } catch (error) {
+        if (error instanceof Error && error.message === "Abra o caixa antes de realizar operações financeiras") {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+        }
+        throw error;
+      }
     }),
     closeTab: protectedProcedure.input(z.object({ tabId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
@@ -215,6 +251,7 @@ export const appRouter = router({
     }),
     setCharges: protectedProcedure.input(z.object({ tabId: z.number().int().positive(), tipPercent: z.union([z.literal(0), z.literal(10)]) })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");
+      await requireOpenCash();
       return setTabCharges(input, ctx.user.id);
     }),
     adjustTabValue: protectedProcedure.input(z.object({
@@ -223,6 +260,7 @@ export const appRouter = router({
       reason: z.string().trim().min(5).max(500),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "adjustTabValue");
+      await requireOpenCash();
       return adjustTabValue(input, ctx.user.id);
     }),
   }),
@@ -303,6 +341,7 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "finance");
       if (input.method === "cash") await requireFeature(ctx, "cash");
+      await requireOpenCash();
       return createExpense(input, ctx.user.id);
     }),
   }),
@@ -329,6 +368,7 @@ export const appRouter = router({
       description: z.string().trim().min(2).max(240),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "cash");
+      await requireOpenCash();
       return addCashMovement(input, ctx.user.id);
     }),
     addExpense: protectedProcedure.input(z.object({
@@ -338,6 +378,7 @@ export const appRouter = router({
       notes: z.string().max(2000).optional(),
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "cash");
+      await requireOpenCash();
       return createExpense({ ...input, method: "cash", occurredAt: new Date() }, ctx.user.id);
     }),
     close: protectedProcedure.input(z.object({
@@ -435,6 +476,39 @@ export const appRouter = router({
     })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "settings");
       return updateCommercialSettings(input, ctx.user.id);
+    }),
+  }),
+  printer: router({
+    status: protectedProcedure.query(async ({ ctx }) => {
+      await requireRole(ctx, ["administrator"]);
+      return getPrinterBridgeStatus();
+    }),
+    createPairingCode: protectedProcedure.mutation(async ({ ctx }) => {
+      await requireRole(ctx, ["administrator"]);
+      return createPrinterPairingCode(ctx.user.id);
+    }),
+    revoke: protectedProcedure.mutation(async ({ ctx }) => {
+      await requireRole(ctx, ["administrator"]);
+      return revokePrinterAgent(ctx.user.id);
+    }),
+    printCashSession: protectedProcedure.input(z.object({ sessionId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      await requireFeature(ctx, "cash");
+      const result = await queueCashSessionPrintJob({ ...input, userId: ctx.user.id });
+      await writeAudit(ctx.user.id, "QUEUE_PRINT_JOB", "print_job", result.jobId, `Enfileirou resumo da sessão de caixa ${input.sessionId}`);
+      return result;
+    }),
+    printTab: protectedProcedure.input(z.object({
+      tabId: z.number().int().positive(),
+      kind: z.enum(["tab", "barista"]).default("tab"),
+      itemId: z.number().int().positive().optional(),
+    }).refine((input) => input.kind !== "barista" || input.itemId !== undefined, {
+      message: "Selecione o item para imprimir no barista",
+      path: ["itemId"],
+    })).mutation(async ({ ctx, input }) => {
+      await requireFeature(ctx, "tables");
+      const result = await queueTabPrintJob({ ...input, userId: ctx.user.id });
+      await writeAudit(ctx.user.id, "QUEUE_PRINT_JOB", "print_job", result.jobId, `Enfileirou impressão ${input.kind} da comanda ${input.tabId}`);
+      return result;
     }),
   }),
   customers: router({

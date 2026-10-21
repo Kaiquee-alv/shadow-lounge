@@ -37,3 +37,11 @@ export function getSessionCookieOptions(
     secure: isSecureRequest(req),
   };
 }
+
+
+/** Local login works over plain HTTP on a private LAN (Lax), and uses a
+ * cross-site Secure cookie when the public request actually arrived over HTTPS. */
+export function getLocalSessionCookieOptions(req: CookieRequest): SessionCookieOptions {
+  const options = getSessionCookieOptions(req);
+  return { ...options, sameSite: options.secure ? "none" : "lax" };
+}

@@ -20,6 +20,9 @@ POSTGRES_DB=shadow_lounge
 POSTGRES_USER=shadow
 POSTGRES_PASSWORD=uma_senha_forte_para_o_banco
 JWT_SECRET=uma_chave_forte_para_as_sessoes
+FIXED_ADMIN_PASSWORD=defina_uma_senha_forte_unica_para_o_admin
+FIXED_MANAGER_PASSWORD=defina_uma_senha_forte_unica_para_o_gerente
+FIXED_ATTENDANT_PASSWORD=defina_uma_senha_forte_unica_para_o_atendente
 APP_PORT=3000
 ```
 
@@ -47,14 +50,9 @@ http://localhost:3000
 
 A aplicação aguarda o PostgreSQL ficar saudável antes de iniciar. A primeira construção pode levar alguns minutos. O comando `pnpm db:push` executado pelo contêiner sincroniza o schema PostgreSQL quando o banco ainda está vazio.
 
-Credencial inicial da operação local:
+Os usuários fixos são `admin`, `gerente` e `atendente`. A senha de cada perfil é definida por `FIXED_ADMIN_PASSWORD`, `FIXED_MANAGER_PASSWORD` e `FIXED_ATTENDANT_PASSWORD` no `.env`; configure valores fortes e diferentes antes de iniciar. Se não houver override, a instalação usa o fallback documentado pelo código. As senhas fixas são reconciliadas no banco durante o login, portanto mudar uma variável e reiniciar o serviço atualiza a credencial sem apagar os dados.
 
-```text
-Usuário: admin
-Senha: shadow2026
-```
-
-Altere a senha depois do primeiro acesso se a instalação for usada em rede real.
+> Não publique nem compartilhe o `.env`. A senha inicial descrita em versões anteriores deste guia não correspondia ao fallback da aplicação; confira as variáveis configuradas no arquivo `.env` em vez de reutilizar instruções antigas.
 
 ## 3. Operação Docker
 

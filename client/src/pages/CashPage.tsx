@@ -51,7 +51,7 @@ export default function CashPage() {
     { enabled: selectedSessionId !== null, retry: false },
   );
   const invalidateCash = async () => {
-    await Promise.all([utils.cash.current.invalidate(), utils.cash.history.invalidate(), utils.cash.details.invalidate()]);
+    await Promise.all([utils.cash.current.invalidate(), utils.cash.history.invalidate(), utils.cash.details.invalidate(), utils.lounge.cashStatus.invalidate()]);
   };
 
   const openMutation = trpc.cash.open.useMutation({
@@ -81,6 +81,10 @@ export default function CashPage() {
       await invalidateCash();
       toast.success("Despesa em dinheiro registrada e descontada do caixa.");
     },
+    onError: (error) => toast.error(error.message),
+  });
+  const printCashMutation = trpc.printer.printCashSession.useMutation({
+    onSuccess: (result) => toast.success(result.agentOnline ? "Resumo enviado à fila do Windows." : "Resumo enfileirado; será impresso quando o computador estiver conectado."),
     onError: (error) => toast.error(error.message),
   });
   const closeMutation = trpc.cash.close.useMutation({
@@ -169,7 +173,7 @@ export default function CashPage() {
               <Button variant="outline" onClick={() => { setMovementKind("withdrawal"); setMovementDialog(true); }}><ArrowDownRight size={16} /> Sangria</Button>
               <Button variant="outline" onClick={() => setCashExpenseOpen(true)}><ReceiptText size={16} /> Despesa em dinheiro</Button>
               <Button variant="outline" onClick={() => { setCountedCash(""); setCloseNote(""); setCloseDialog(true); }}>Fechar caixa</Button>
-              <Button variant="outline" onClick={() => window.print()}><Printer size={16} /> Imprimir resumo</Button>
+              <Button variant="outline" disabled={printCashMutation.isPending} onClick={() => currentSession && printCashMutation.mutate({ sessionId: currentSession.id })}><Printer size={16} /> {printCashMutation.isPending ? "Enviando…" : "Imprimir resumo"}</Button>
             </div>
           </section>
 
@@ -215,7 +219,7 @@ export default function CashPage() {
       </section>
 
       {selectedSessionId !== null && <section className="panel cash-detail-panel cash-print-area">
-        <div className="panel-header"><div><span className="section-kicker">RESUMO DO TURNO</span><h3>{selectedSession ? `Sessão de ${dateTime(selectedSession.openedAt)}` : "Carregando sessão…"}</h3></div><div className="cash-actions cash-print-hide"><Button variant="outline" onClick={() => window.print()}><Printer size={16} /> Imprimir</Button><Button variant="outline" onClick={() => setSelectedSessionId(null)}>Fechar detalhes</Button></div></div>
+        <div className="panel-header"><div><span className="section-kicker">RESUMO DO TURNO</span><h3>{selectedSession ? `Sessão de ${dateTime(selectedSession.openedAt)}` : "Carregando sessão…"}</h3></div><div className="cash-actions cash-print-hide"><Button variant="outline" disabled={!selectedSession || printCashMutation.isPending} onClick={() => selectedSession && printCashMutation.mutate({ sessionId: selectedSession.id })}><Printer size={16} /> {printCashMutation.isPending ? "Enviando…" : "Imprimir"}</Button><Button variant="outline" onClick={() => setSelectedSessionId(null)}>Fechar detalhes</Button></div></div>
         {detailsQuery.isLoading ? <div className="cash-list-empty">Carregando lançamentos…</div> : detailsQuery.error ? <div className="cash-list-empty cash-error-text">{detailsQuery.error.message}</div> : selectedSession ? <>
           <div className="cash-detail-meta"><span>Aberto por <b>{selectedSession.openedByName || "Operador"}</b> · {dateTime(selectedSession.openedAt)}</span><span>Fechado por <b>{selectedSession.closedByName || "—"}</b> · {dateTime(selectedSession.closedAt)}</span></div>
           <div className="cash-close-summary">
