@@ -220,7 +220,7 @@ export default function Home() {
   const workspaceQuery = trpc.workspace.bootstrap.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const printerStatusQuery = trpc.printer.status.useQuery(undefined, { enabled: isAuthenticated && page === "settings" && workspaceQuery.data?.localRole === "administrator", retry: false, refetchInterval: isAuthenticated && page === "settings" && workspaceQuery.data?.localRole === "administrator" ? 15_000 : false });
   const printerTabJobs = (printerStatusQuery.data?.jobs ?? []).filter((job) => job.kind === "tab");
-  const printerOtherJobs = (printerStatusQuery.data?.jobs ?? []).filter((job) => job.kind !== "tab").slice(0, 5);
+  const printerOtherJobs = (printerStatusQuery.data?.jobs ?? []).filter((job) => job.kind !== "tab");
 
   const refreshOperationalData = (keys: { tables?: boolean; dashboard?: boolean; products?: boolean } = {}) => {
     if (keys.tables) void utils.lounge.tables.invalidate();
@@ -597,7 +597,7 @@ export default function Home() {
               {localRole === "administrator" && printerPairing && new Date(printerPairing.expiresAt).getTime() > Date.now() && <div className="product-callout"><ShieldCheck size={19} /><div><b>Código temporário · válido por 10 minutos</b><code>{printerPairing.pairingCode}</code><span>Digite-o no PowerShell do computador. O código é usado uma única vez.</span></div><Button variant="outline" size="sm" onClick={() => { void navigator.clipboard.writeText(printerPairing.pairingCode).then(() => toast.success("Código copiado."), () => toast.error("Não foi possível copiar o código.")); }}>Copiar código</Button></div>}
               {!!(printerTabJobs.length || printerOtherJobs.length) && <div className="cash-printer-jobs">
                 {!!printerTabJobs.length && <div><span className="section-kicker">ÚLTIMAS 3 IMPRESSÕES DE COMANDAS</span><small>Trabalhos na fila ou em impressão são mantidos até a conclusão.</small><PrinterJobRows jobs={printerTabJobs} /></div>}
-                {!!printerOtherJobs.length && <div><span className="section-kicker">OUTROS TRABALHOS · BARISTA/CAIXA</span><PrinterJobRows jobs={printerOtherJobs} /></div>}
+                {!!printerOtherJobs.length && <div><span className="section-kicker">OUTROS TRABALHOS · BARISTA/CAIXA · ÚLTIMOS 3</span><small>O histórico concluído mantém até três registros; jobs na fila ou em impressão são preservados.</small><PrinterJobRows jobs={printerOtherJobs} /></div>}
               </div>}
               {printerStatusQuery.error && <p className="cash-error-text">{printerStatusQuery.error.message}</p>}
             </section>}
