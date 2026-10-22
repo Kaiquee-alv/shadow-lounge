@@ -35,7 +35,7 @@ Parear novamente (inclusive após revogar o agente) exige gerar outro código e 
 - A API do agente exige HTTPS e autenticação Bearer; a geração/revogação e o status são protegidos pelo login e papel administrativo no tRPC.
 - O polling reivindica um job com bloqueio transacional. Se a impressão terminar sem confirmação, o servidor não repete automaticamente o job: após cinco minutos em estado de processamento ele vira `uncertain`, para evitar duplicatas. Confira a impressora antes de solicitar nova impressão.
 - O estado `printed` significa que o Windows aceitou o trabalho no spooler; não é confirmação física de que o papel saiu.
-- O recibo alimenta uma linha e usa o cortador automático, minimizando papel extra. O agente não pede confirmação de impressão, mas alertas de papel/tampa/energia continuam dependendo do hardware e do driver Windows.
+- O ticket do barista destaca os campos em fonte ampliada; a observação usa fonte ESC/POS tripla, em negrito, e quebra linhas a cada 14 caracteres de referência, podendo consumir mais papel quando a observação for longa. Os demais recibos mantêm a formatação anterior. O agente não pede confirmação de impressão, mas alertas de papel/tampa/energia continuam dependendo do hardware e do driver Windows.
 
 ## Diagnóstico
 

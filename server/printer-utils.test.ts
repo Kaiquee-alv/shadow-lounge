@@ -77,6 +77,10 @@ describe("impressão direta", () => {
     const payload = buildBaristaPrintPayload(tab, 3);
     expect(payload.kind).toBe("barista");
     expect(payload.lines.map((entry) => entry.text).join("\n")).toContain("PEDIDO PARA O BARISTA");
+    expect(payload.lines.find((entry) => entry.text === "PEDIDO PARA O BARISTA")).toMatchObject({ size: "normal", bold: true });
+    expect(payload.lines.find((entry) => entry.text === "OBSERVAÇÃO")).toMatchObject({ size: "large", bold: true });
+    expect(payload.lines.find((entry) => entry.text === "Sem gelo")).toMatchObject({ size: "xlarge", bold: true });
+    expect(payload.lines.find((entry) => entry.text === "2x")).toMatchObject({ size: "large", bold: true });
     expect(() => buildBaristaPrintPayload(tab, 99)).toThrow("não pertence a esta comanda");
   });
 });

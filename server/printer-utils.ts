@@ -3,7 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 export type PrintReceiptLine = {
   text: string;
   align?: "left" | "center";
-  size?: "small" | "normal" | "large";
+  size?: "small" | "normal" | "large" | "xlarge";
   bold?: boolean;
   separator?: boolean;
 };
@@ -100,18 +100,18 @@ export function buildBaristaPrintPayload(tab: PrintableTab, itemId: number): Pri
   if (!item) throw new Error("O item selecionado não pertence a esta comanda");
   const lines: PrintReceiptLine[] = [
     line("SHADOW LOUNGE", { align: "center", size: "large", bold: true }),
-    line("PEDIDO PARA O BARISTA", { align: "center", size: "small" }),
+    line("PEDIDO PARA O BARISTA", { align: "center", size: "normal", bold: true }),
     divider(),
-    line("MESA", { align: "center", size: "small" }),
+    line("MESA", { align: "center", size: "normal", bold: true }),
     line(String(tab.tableNumber), { align: "center", size: "large", bold: true }),
-    line(tab.tabCode, { align: "center", size: "small" }),
+    line(tab.tabCode, { align: "center", size: "normal" }),
     divider(),
     line(`${item.quantity}x`, { size: "large", bold: true }),
     line(item.productName, { size: "large", bold: true }),
   ];
-  if (item.discountReason) lines.push(line(`${item.discountReason} · ${money(item.unitPriceCents)}`, { bold: true }));
-  if (item.note) lines.push(divider(), line("OBSERVAÇÃO", { bold: true }), line(item.note, { size: "large" }));
-  lines.push(line(`Lançado por: ${item.addedByName || "Operador"}`, { size: "small" }), divider(), line("Preparar e entregar na mesa indicada", { align: "center", size: "small" }));
+  if (item.discountReason) lines.push(line(`${item.discountReason} · ${money(item.unitPriceCents)}`, { size: "large", bold: true }));
+  if (item.note) lines.push(divider(), line("OBSERVAÇÃO", { size: "large", bold: true }), line(item.note, { size: "xlarge", bold: true }));
+  lines.push(line(`Lançado por: ${item.addedByName || "Operador"}`, { size: "normal" }), divider(), line("Preparar e entregar na mesa indicada", { align: "center", size: "normal" }));
   return { kind: "barista", lines };
 }
 

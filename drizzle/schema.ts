@@ -351,7 +351,7 @@ export const printJobs = pgTable(
     agentId: integer("agentId").notNull().references(() => printerAgents.id),
     kind: varchar("kind", { length: 20 }).$type<"tab" | "barista" | "cash">().notNull(),
     status: varchar("status", { length: 20 }).$type<"queued" | "processing" | "printed" | "failed" | "uncertain">().default("queued").notNull(),
-    payload: jsonb("payload").$type<{ kind: "tab" | "barista" | "cash"; lines: Array<{ text: string; align?: "left" | "center"; size?: "small" | "normal" | "large"; bold?: boolean; separator?: boolean }> }>().notNull(),
+    payload: jsonb("payload").$type<{ kind: "tab" | "barista" | "cash"; lines: Array<{ text: string; align?: "left" | "center"; size?: "small" | "normal" | "large" | "xlarge"; bold?: boolean; separator?: boolean }> }>().notNull(),
     requestedBy: integer("requestedBy").notNull().references(() => users.id),
     attempts: integer("attempts").default(0).notNull(),
     lastError: varchar("lastError", { length: 500 }),

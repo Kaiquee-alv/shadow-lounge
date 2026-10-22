@@ -875,18 +875,18 @@ function buildBaristaPrintPayload(tab, itemId) {
   if (!item) throw new Error("O item selecionado n\xE3o pertence a esta comanda");
   const lines = [
     line("SHADOW LOUNGE", { align: "center", size: "large", bold: true }),
-    line("PEDIDO PARA O BARISTA", { align: "center", size: "small" }),
+    line("PEDIDO PARA O BARISTA", { align: "center", size: "normal", bold: true }),
     divider(),
-    line("MESA", { align: "center", size: "small" }),
+    line("MESA", { align: "center", size: "normal", bold: true }),
     line(String(tab.tableNumber), { align: "center", size: "large", bold: true }),
-    line(tab.tabCode, { align: "center", size: "small" }),
+    line(tab.tabCode, { align: "center", size: "normal" }),
     divider(),
     line(`${item.quantity}x`, { size: "large", bold: true }),
     line(item.productName, { size: "large", bold: true })
   ];
-  if (item.discountReason) lines.push(line(`${item.discountReason} \xB7 ${money(item.unitPriceCents)}`, { bold: true }));
-  if (item.note) lines.push(divider(), line("OBSERVA\xC7\xC3O", { bold: true }), line(item.note, { size: "large" }));
-  lines.push(line(`Lan\xE7ado por: ${item.addedByName || "Operador"}`, { size: "small" }), divider(), line("Preparar e entregar na mesa indicada", { align: "center", size: "small" }));
+  if (item.discountReason) lines.push(line(`${item.discountReason} \xB7 ${money(item.unitPriceCents)}`, { size: "large", bold: true }));
+  if (item.note) lines.push(divider(), line("OBSERVA\xC7\xC3O", { size: "large", bold: true }), line(item.note, { size: "xlarge", bold: true }));
+  lines.push(line(`Lan\xE7ado por: ${item.addedByName || "Operador"}`, { size: "normal" }), divider(), line("Preparar e entregar na mesa indicada", { align: "center", size: "normal" }));
   return { kind: "barista", lines };
 }
 function buildCashSessionPrintPayload(session) {
@@ -2551,10 +2551,26 @@ async function pairPrinterAgent(input) {
   if (!updated[0]) throw new Error("C\xF3digo inv\xE1lido, expirado ou j\xE1 utilizado. Gere um novo c\xF3digo no sistema.");
   return { agentToken };
 }
+async function pruneOldTabPrintJobs(executor) {
+  await executor.execute(sql2`
+    DELETE FROM public."windows_print_jobs"
+    WHERE "kind" = 'tab'
+      AND "status" IN ('printed', 'failed', 'uncertain')
+      AND "id" NOT IN (
+        SELECT "id"
+        FROM public."windows_print_jobs"
+        WHERE "kind" = 'tab'
+          AND "status" IN ('printed', 'failed', 'uncertain')
+        ORDER BY COALESCE("completedAt", "createdAt") DESC, "id" DESC
+        LIMIT 3
+      )
+  `);
+}
 async function getPrinterBridgeStatus() {
   await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indispon\xEDvel");
+  await pruneOldTabPrintJobs(db);
   const [agent] = await db.select({
     id: printerAgents.id,
     computerName: printerAgents.computerName,
@@ -2563,7 +2579,7 @@ async function getPrinterBridgeStatus() {
     lastSeenAt: printerAgents.lastSeenAt,
     pairedAt: printerAgents.pairedAt
   }).from(printerAgents).where(eq(printerAgents.id, 1)).limit(1);
-  const jobs = await db.select({
+  const jobFields = {
     id: printJobs.id,
     kind: printJobs.kind,
     status: printJobs.status,
@@ -2571,7 +2587,13 @@ async function getPrinterBridgeStatus() {
     lastError: printJobs.lastError,
     createdAt: printJobs.createdAt,
     completedAt: printJobs.completedAt
-  }).from(printJobs).orderBy(desc(printJobs.createdAt), desc(printJobs.id)).limit(25);
+  };
+  const [tabHistory, activeTabJobs, otherJobs] = await Promise.all([
+    db.select(jobFields).from(printJobs).where(and(eq(printJobs.kind, "tab"), inArray(printJobs.status, ["printed", "failed", "uncertain"]))).orderBy(desc(printJobs.completedAt), desc(printJobs.createdAt), desc(printJobs.id)).limit(3),
+    db.select(jobFields).from(printJobs).where(and(eq(printJobs.kind, "tab"), inArray(printJobs.status, ["queued", "processing"]))).orderBy(desc(printJobs.createdAt), desc(printJobs.id)).limit(100),
+    db.select(jobFields).from(printJobs).where(inArray(printJobs.kind, ["barista", "cash"])).orderBy(desc(printJobs.createdAt), desc(printJobs.id)).limit(5)
+  ]);
+  const jobs = [...tabHistory, ...activeTabJobs, ...otherJobs].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id);
   const online = !!agent?.enabled && !!agent.lastSeenAt && Date.now() - agent.lastSeenAt.getTime() < 45e3;
   return {
     agent: agent ? { ...agent, online, paired: !!agent.enabled && !!agent.pairedAt } : null,
@@ -2627,9 +2649,10 @@ async function completePrintJob(input) {
     status: input.status,
     lastError: input.status === "failed" ? input.error?.replace(/[\r\n\0]/g, " ").slice(0, 500) || "Falha desconhecida no agente de impress\xE3o" : null,
     completedAt: now
-  }).where(and(eq(printJobs.id, input.jobId), eq(printJobs.agentId, agentId), eq(printJobs.status, "processing"))).returning({ id: printJobs.id });
+  }).where(and(eq(printJobs.id, input.jobId), eq(printJobs.agentId, agentId), eq(printJobs.status, "processing"))).returning({ id: printJobs.id, kind: printJobs.kind });
   await db.update(printerAgents).set({ lastSeenAt: now, updatedAt: now }).where(eq(printerAgents.id, agentId));
   if (!changed[0]) return { accepted: false };
+  if (changed[0].kind === "tab") await pruneOldTabPrintJobs(db);
   return { accepted: true };
 }
 async function queueTabPrintJob(input) {

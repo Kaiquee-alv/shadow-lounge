@@ -1819,10 +1819,28 @@ export async function pairPrinterAgent(input: { pairingCode: string; computerNam
   return { agentToken };
 }
 
+async function pruneOldTabPrintJobs(executor: any) {
+  // Mantém três rastros terminais globais de comandas; nunca apaga jobs em fila/impressão.
+  await executor.execute(sql`
+    DELETE FROM public."windows_print_jobs"
+    WHERE "kind" = 'tab'
+      AND "status" IN ('printed', 'failed', 'uncertain')
+      AND "id" NOT IN (
+        SELECT "id"
+        FROM public."windows_print_jobs"
+        WHERE "kind" = 'tab'
+          AND "status" IN ('printed', 'failed', 'uncertain')
+        ORDER BY COALESCE("completedAt", "createdAt") DESC, "id" DESC
+        LIMIT 3
+      )
+  `);
+}
+
 export async function getPrinterBridgeStatus() {
   await ensureInitialData();
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
+  await pruneOldTabPrintJobs(db);
   const [agent] = await db.select({
     id: printerAgents.id,
     computerName: printerAgents.computerName,
@@ -1831,7 +1849,7 @@ export async function getPrinterBridgeStatus() {
     lastSeenAt: printerAgents.lastSeenAt,
     pairedAt: printerAgents.pairedAt,
   }).from(printerAgents).where(eq(printerAgents.id, 1)).limit(1);
-  const jobs = await db.select({
+  const jobFields = {
     id: printJobs.id,
     kind: printJobs.kind,
     status: printJobs.status,
@@ -1839,7 +1857,20 @@ export async function getPrinterBridgeStatus() {
     lastError: printJobs.lastError,
     createdAt: printJobs.createdAt,
     completedAt: printJobs.completedAt,
-  }).from(printJobs).orderBy(desc(printJobs.createdAt), desc(printJobs.id)).limit(25);
+  };
+  const [tabHistory, activeTabJobs, otherJobs] = await Promise.all([
+    db.select(jobFields).from(printJobs)
+      .where(and(eq(printJobs.kind, "tab"), inArray(printJobs.status, ["printed", "failed", "uncertain"])))
+      .orderBy(desc(printJobs.completedAt), desc(printJobs.createdAt), desc(printJobs.id)).limit(3),
+    db.select(jobFields).from(printJobs)
+      .where(and(eq(printJobs.kind, "tab"), inArray(printJobs.status, ["queued", "processing"])))
+      .orderBy(desc(printJobs.createdAt), desc(printJobs.id)).limit(100),
+    db.select(jobFields).from(printJobs)
+      .where(inArray(printJobs.kind, ["barista", "cash"]))
+      .orderBy(desc(printJobs.createdAt), desc(printJobs.id)).limit(5),
+  ]);
+  const jobs = [...tabHistory, ...activeTabJobs, ...otherJobs]
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id);
   const online = !!agent?.enabled && !!agent.lastSeenAt && Date.now() - agent.lastSeenAt.getTime() < 45_000;
   return {
     agent: agent ? { ...agent, online, paired: !!agent.enabled && !!agent.pairedAt } : null,
@@ -1908,9 +1939,10 @@ export async function completePrintJob(input: { token: string; jobId: number; st
     status: input.status,
     lastError: input.status === "failed" ? (input.error?.replace(/[\r\n\0]/g, " ").slice(0, 500) || "Falha desconhecida no agente de impressão") : null,
     completedAt: now,
-  }).where(and(eq(printJobs.id, input.jobId), eq(printJobs.agentId, agentId), eq(printJobs.status, "processing"))).returning({ id: printJobs.id });
+  }).where(and(eq(printJobs.id, input.jobId), eq(printJobs.agentId, agentId), eq(printJobs.status, "processing"))).returning({ id: printJobs.id, kind: printJobs.kind });
   await db.update(printerAgents).set({ lastSeenAt: now, updatedAt: now }).where(eq(printerAgents.id, agentId));
   if (!changed[0]) return { accepted: false };
+  if (changed[0].kind === "tab") await pruneOldTabPrintJobs(db);
   return { accepted: true };
 }
 

@@ -97,9 +97,10 @@ function ConvertTo-ReceiptBytes($Payload) {
     $bold = if ($line.bold) { 1 } else { 0 }
     $size = [string]$line.size
     $font = if ($size -eq "small") { 1 } else { 0 }
-    $scale = if ($size -eq "large") { 0x11 } else { 0 }
+    # ESC/POS GS ! 0x11 = 2x; 0x22 = 3x width and height.
+    $scale = if ($size -eq "xlarge") { 0x22 } elseif ($size -eq "large") { 0x11 } else { 0 }
     & $write ([byte[]]@($esc, 0x61, $alignment, $esc, 0x45, $bold, $esc, 0x4D, $font, $gs, 0x21, $scale))
-    $width = if ($size -eq "large") { 21 } else { 42 }
+    $width = if ($size -eq "xlarge") { 14 } elseif ($size -eq "large") { 21 } else { 42 }
     foreach ($rawLine in ($text -split "`r?`n")) {
       if ($rawLine.Length -eq 0) {
         & $write ([byte[]]@(0x0A))

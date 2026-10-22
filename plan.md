@@ -47,6 +47,7 @@ Implementar no Shadow Lounge um caixa simples por sessão/turno, que pode atrave
 - Um administrador autenticado gera código aleatório de uso único, com validade de 10 minutos, ou revoga o agente. O status do agente é visível somente a administradores; nunca são expostos token/hash no browser ou logs.
 - Usuários com acesso a Mesas podem enfileirar comandas/pedidos do barista; usuários com Caixa podem enfileirar resumos do caixa. Os endpoints de polling e resultado exigem Bearer token, e o agente só altera jobs vinculados a seu identificador.
 - A reivindicação usa transação e `FOR UPDATE SKIP LOCKED`. Se o processo perder a conexão enquanto um job está sendo impresso, ele passa a `uncertain` após cinco minutos e não é reenviado automaticamente, reduzindo duplicatas. `printed` significa que o spooler Windows aceitou o job, não confirmação física do papel.
+- Para reduzir armazenamento, manter no máximo os três jobs terminais mais recentes do tipo `tab` no banco e na seção de configurações; limpar registros antigos ao carregar o status e ao concluir jobs. Jobs `queued`/`processing` nunca são removidos, e o histórico de `barista`/`cash` fica separado e preservado.
 
 ### Estrutura principal
 - `client/src/pages/Home.tsx`: envio à fila de comandas e tickets do barista, com feedback da espera do agente.
