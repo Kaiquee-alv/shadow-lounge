@@ -308,7 +308,44 @@ export default function Home() {
     onSuccess: (result) => toast.success(result.agentOnline ? "Comanda enfileirada para impressão no Windows." : "Comanda enfileirada; será impressa quando o computador estiver conectado."),
     onError: (error) => toast.error(error.message),
   });
-  const payMutation = trpc.lounge.pay.useMutation({ onSuccess: (_result, variables) => { clearPendingOnlinePayment(variables.requestKey); void utils.lounge.tab.invalidate({ tabId: variables.tabId }); void utils.cash.current.invalidate(); void utils.finance.summary.invalidate(); refreshOperationalData({ tables: true, dashboard: true }); setPaymentOpen(false); setPaymentValue(""); toast.success("Pagamento registrado. A mesa permanece aberta."); }, onError: (error, variables) => { if (error.data?.code === "PRECONDITION_FAILED") clearPendingOnlinePayment(variables.requestKey); toast.error(error.message); } });
+  const payMutation = trpc.lounge.pay.useMutation({
+    onSuccess: (_result, variables) => {
+      clearPendingOnlinePayment(variables.requestKey);
+      void utils.lounge.tab.invalidate({ tabId: variables.tabId });
+      void utils.cash.current.invalidate();
+      void utils.finance.summary.invalidate();
+      refreshOperationalData({ tables: true, dashboard: true });
+      setPaymentOpen(false);
+      setPaymentValue("");
+      toast.success("Pagamento registrado. A mesa permanece aberta.");
+    },
+    onError: (error, variables) => {
+      // These responses happen before a payment can be committed; do not leave a dead local lock.
+      if (["PRECONDITION_FAILED", "FORBIDDEN", "UNAUTHORIZED"].includes(error.data?.code ?? "")) {
+        clearPendingOnlinePayment(variables.requestKey);
+      }
+      toast.error(error.message);
+    },
+  });
+  const reconcilePendingPaymentMutation = trpc.lounge.reconcilePendingPayment.useMutation({
+    onSuccess: (result, variables) => {
+      if (result.status === "mismatch") {
+        toast.error("A tentativa pendente não corresponde aos dados salvos. Por segurança, peça ao administrador para conferir antes de cobrar novamente.");
+        return;
+      }
+      clearPendingOnlinePayment(variables.requestKey);
+      if (result.status === "recorded") {
+        void utils.lounge.tab.invalidate({ tabId: variables.tabId });
+        void utils.cash.current.invalidate();
+        void utils.finance.summary.invalidate();
+        refreshOperationalData({ tables: true, dashboard: true });
+        toast.info("O pagamento anterior já foi registrado. Confira o saldo atualizado antes de lançar outro.");
+        return;
+      }
+      toast.info("A tentativa anterior não foi registrada no servidor. O bloqueio foi liberado; confirme novamente o pagamento desejado.");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const closeMutation = trpc.lounge.closeTab.useMutation({ onSuccess: (_result, variables) => { void utils.finance.summary.invalidate(); setSelectedTabId(null); void utils.lounge.tab.invalidate({ tabId: variables.tabId }); void utils.lounge.tables.refetch(); void utils.lounge.dashboard.invalidate(); toast.success("Comanda encerrada e mesa liberada"); }, onError: (error) => toast.error(error.message) });
   const transferMutation = trpc.lounge.transferTab.useMutation({ onSuccess: (result) => { setTransferOpen(false); setTransferDestination(null); void utils.lounge.tables.refetch(); void utils.lounge.tab.invalidate({ tabId: result.tabId }); toast.success(`Comanda transferida para a mesa ${result.tableNumber}`); }, onError: (error) => toast.error(error.message) });
   const customerNameMutation = trpc.lounge.setCustomerName.useMutation({ onSuccess: () => { setCustomerNameOpen(false); void utils.lounge.tab.invalidate(); void utils.lounge.tables.invalidate(); toast.success("Nome da mesa atualizado"); }, onError: (error) => toast.error(error.message) });
@@ -490,9 +527,10 @@ export default function Home() {
     if (!Number.isFinite(cents) || cents <= 0) { toast.error("Informe um valor de pagamento válido"); return; }
     const existing = readPendingOnlinePayment();
     if (existing && (existing.tabId !== activeTab.id || existing.amountCents !== cents || existing.method !== paymentMethod)) {
-      toast.error("Há um pagamento aguardando confirmação. Reenvie o mesmo valor e forma de pagamento antes de iniciar outro.");
+      reconcilePendingPaymentMutation.mutate(existing);
       return;
     }
+    if (!hasFeatureAccess("cash")) { toast.error("Seu perfil precisa da permissão Caixa para registrar pagamentos. Peça ao administrador para liberar esse acesso."); return; }
     if (!cashIsOpen && !existing) { toast.error("Abra o caixa antes de registrar pagamentos."); return; }
     if (activeTab.id < 0) {
       const totals = offlineTotals(activeOfflineTab!);
@@ -664,7 +702,7 @@ export default function Home() {
           {activeTab && <div className="payment-summary"><div><span>Consumido</span><b>{money(activeTab.totalCents)}</b></div><div><span>Já pago</span><b>{money(activeTab.paidCents)}</b></div><div className="balance"><span>Saldo atual</span><b>{money(activeTab.balanceCents)}</b></div></div>}
           <label className="field-label">Valor a receber<Input type="number" inputMode="decimal" placeholder="0,00" value={paymentValue} onChange={(e) => setPaymentValue(e.target.value)} disabled={pendingOnlinePaymentForActiveTab} /></label>
           <div className="method-grid">{(Object.keys(methodLabel) as Method[]).map((method) => <button key={method} onClick={() => setPaymentMethod(method)} disabled={pendingOnlinePaymentForActiveTab} className={paymentMethod === method ? "method-active" : ""} aria-pressed={paymentMethod === method}>{method === "pix" ? <Zap size={19} /> : method === "cash" ? <Banknote size={19} /> : <CreditCard size={19} />}<span>{methodLabel[method]}</span>{paymentMethod === method && <small className="method-selected-label">Selecionado</small>}</button>)}</div>
-          <Button variant="outline" className="primary-wide" onClick={printTab} disabled={!activeTab || payMutation.isPending || enqueuePrintMutation.isPending}><Printer size={17} /> {enqueuePrintMutation.isPending ? "Enfileirando…" : "Imprimir comanda"}</Button><Button className="primary-wide" onClick={processPayment} disabled={payMutation.isPending || (!cashIsOpen && !pendingOnlinePaymentForActiveTab)}>{payMutation.isPending ? "Registrando..." : pendingOnlinePaymentForActiveTab ? "Confirmar pagamento pendente" : "Confirmar pagamento"}</Button>
+          <Button variant="outline" className="primary-wide" onClick={printTab} disabled={!activeTab || payMutation.isPending || enqueuePrintMutation.isPending}><Printer size={17} /> {enqueuePrintMutation.isPending ? "Enfileirando…" : "Imprimir comanda"}</Button><Button className="primary-wide" onClick={processPayment} disabled={payMutation.isPending || reconcilePendingPaymentMutation.isPending || (!cashIsOpen && !pendingOnlinePaymentForActiveTab)}>{reconcilePendingPaymentMutation.isPending ? "Verificando tentativa anterior..." : payMutation.isPending ? "Registrando..." : pendingOnlinePaymentForActiveTab ? "Confirmar pagamento pendente" : "Confirmar pagamento"}</Button>
         </DialogContent>
       </Dialog>
 

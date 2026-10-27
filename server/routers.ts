@@ -44,6 +44,7 @@ import {
   openCashSession,
   syncOfflineTab,
   registerPayment,
+  reconcilePendingPayment,
   saveProduct,
   setTabItemQuantity,
   setTabCharges,
@@ -244,6 +245,12 @@ export const appRouter = router({
         }
         throw error;
       }
+    }),
+    reconcilePendingPayment: protectedProcedure.input(z.object({
+      tabId: z.number().int().positive(), amountCents: z.number().int().positive(), method: paymentMethod, requestKey: z.string().min(8).max(80),
+    })).mutation(async ({ ctx, input }) => {
+      await requireFeature(ctx, "tables");
+      return reconcilePendingPayment(input);
     }),
     closeTab: protectedProcedure.input(z.object({ tabId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await requireFeature(ctx, "tables");

@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   closeCashSession: vi.fn(),
   registerPayment: vi.fn(),
   openTab: vi.fn(),
+  reconcilePendingPayment: vi.fn(),
   addTabItem: vi.fn(),
   setTabItemQuantity: vi.fn(),
   setTabCharges: vi.fn(),
@@ -48,6 +49,7 @@ vi.mock("./db.js", async (importOriginal) => {
     closeCashSession: mocks.closeCashSession,
     registerPayment: mocks.registerPayment,
     openTab: mocks.openTab,
+    reconcilePendingPayment: mocks.reconcilePendingPayment,
     addTabItem: mocks.addTabItem,
     setTabItemQuantity: mocks.setTabItemQuantity,
     setTabCharges: mocks.setTabCharges,
@@ -86,6 +88,7 @@ describe("permissões de atendente para clientes e relatórios", () => {
     mocks.closeCashSession.mockResolvedValue({ id: 15, differenceCents: 0 });
     mocks.registerPayment.mockResolvedValue({ paymentId: 42, duplicate: false });
     mocks.openTab.mockResolvedValue({ id: 41, tabCode: "#000041", tipPercent: 0 });
+    mocks.reconcilePendingPayment.mockResolvedValue({ status: "not_found" });
     mocks.addTabItem.mockResolvedValue({ id: 42 });
     mocks.setTabItemQuantity.mockResolvedValue({ success: true });
     mocks.setTabCharges.mockResolvedValue({ success: true });
@@ -268,6 +271,17 @@ describe("permissões de atendente para clientes e relatórios", () => {
     expect(mocks.adjustTabValue).not.toHaveBeenCalled();
     expect(mocks.createExpense).not.toHaveBeenCalled();
     expect(mocks.addCashMovement).not.toHaveBeenCalled();
+  });
+
+  it("reconcilia uma chave pendente do atendente sem conceder acesso a operações do caixa", async () => {
+    mocks.getRolePermissions.mockResolvedValue({
+      ...DEFAULT_ROLE_PERMISSIONS,
+      attendant: DEFAULT_ROLE_PERMISSIONS.attendant.filter((feature) => feature !== "cash"),
+    });
+    const pending = { tabId: 41, amountCents: 1500, method: "pix" as const, requestKey: "payment-pending-123" };
+    await expect(caller.lounge.reconcilePendingPayment(pending)).resolves.toEqual({ status: "not_found" });
+    expect(mocks.reconcilePendingPayment).toHaveBeenCalledWith(pending);
+    expect(mocks.registerPayment).not.toHaveBeenCalled();
   });
 
   it("bloqueia a API do caixa quando o administrador remove a funcionalidade do perfil", async () => {

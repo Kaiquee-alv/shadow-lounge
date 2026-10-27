@@ -934,6 +934,7 @@ export async function registerPayment(input: { tabId: number; amountCents: numbe
   const db = await getDb();
   if (!db) throw new Error("Banco de dados indisponível");
   return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended('shadow-lounge:payment:' || ${input.requestKey}, 0))`);
     const returnDuplicateOrRejectMismatch = (existing: { id: number; tabId: number; amountCents: number; method: string }) => {
       if (!paymentRequestMatches(existing, input)) {
         throw new Error("Esta chave de pagamento já foi usada com dados diferentes");
@@ -960,6 +961,19 @@ export async function registerPayment(input: { tabId: number; amountCents: numbe
     await tx.update(loungeTables).set({ status: newBalance > 0 ? "partial" : "occupied" }).where(eq(loungeTables.id, tab[0].tableId));
     await tx.insert(auditLogs).values({ userId, action: "PAYMENT", entityType: "tab", entityId: input.tabId, description: `Recebeu pagamento de R$ ${(input.amountCents / 100).toFixed(2)}` });
     return { paymentId, duplicate: false };
+  });
+}
+
+export async function reconcilePendingPayment(input: { tabId: number; amountCents: number; method: "pix" | "cash" | "debit" | "credit" | "other"; requestKey: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco de dados indisponível");
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended('shadow-lounge:payment:' || ${input.requestKey}, 0))`);
+    const existing = await tx.select({ id: payments.id, tabId: payments.tabId, amountCents: payments.amountCents, method: payments.method })
+      .from(payments).where(eq(payments.requestKey, input.requestKey)).limit(1);
+    if (!existing[0]) return { status: "not_found" as const };
+    if (!paymentRequestMatches(existing[0], input)) return { status: "mismatch" as const };
+    return { status: "recorded" as const, paymentId: existing[0].id };
   });
 }
 
